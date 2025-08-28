@@ -71,11 +71,11 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/openscad-mcp-server"
-Documentation = "https://github.com/yourusername/openscad-mcp-server#readme"
-Repository = "https://github.com/yourusername/openscad-mcp-server.git"
-Issues = "https://github.com/yourusername/openscad-mcp-server/issues"
-Changelog = "https://github.com/yourusername/openscad-mcp-server/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/quellant/openscad-mcp"
+Documentation = "https://github.com/quellant/openscad-mcp#readme"
+Repository = "https://github.com/quellant/openscad-mcp.git"
+Issues = "https://github.com/quellant/openscad-mcp/issues"
+Changelog = "https://github.com/quellant/openscad-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 openscad-mcp = "openscad_mcp.server:main"

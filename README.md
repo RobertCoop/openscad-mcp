@@ -7,33 +7,65 @@
 
 A production-ready Model Context Protocol (MCP) server that provides OpenSCAD 3D rendering capabilities to AI assistants and LLM applications. Built with FastMCP for robust, scalable performance.
 
+## 🎯 Zero-Installation Execution
+
+**Run directly from GitHub without any setup:**
+```bash
+uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+```
+
+Perfect for MCP clients, CI/CD pipelines, and instant deployment scenarios!
+
 ## 🚀 Quick Start
 
-### Install and Run
+### Zero-Installation Execution with `uv`
+
+No installation required! Run directly from GitHub:
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/openscad-mcp-server.git
-cd openscad-mcp-server
+# Run via script entry point (recommended)
+uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 
-# Install with uv (recommended)
-uv pip install -e .
+# Or run as Python module
+uv run --with git+https://github.com/quellant/openscad-mcp.git python -m openscad_mcp
+```
 
-# Run the server
-python -m openscad_mcp
+### Traditional Installation (Optional)
+
+```bash
+# Clone and run locally
+git clone https://github.com/quellant/openscad-mcp.git
+cd openscad-mcp
+uv run openscad-mcp
 ```
 
 ### Configure with Claude Desktop
 
 Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
+#### Option 1: Direct from GitHub (Recommended)
 ```json
 {
   "mcpServers": {
     "openscad": {
-      "command": "python",
-      "args": ["-m", "openscad_mcp"],
-      "cwd": "/path/to/openscad-mcp-server",
+      "command": "uv",
+      "args": ["run", "--with", "git+https://github.com/quellant/openscad-mcp.git", "openscad-mcp"],
+      "env": {
+        "OPENSCAD_PATH": "/usr/bin/openscad"
+      }
+    }
+  }
+}
+```
+
+#### Option 2: Local Installation
+```json
+{
+  "mcpServers": {
+    "openscad": {
+      "command": "uv",
+      "args": ["run", "openscad-mcp"],
+      "cwd": "/path/to/openscad-mcp",
       "env": {
         "OPENSCAD_PATH": "/usr/bin/openscad"
       }
@@ -56,6 +88,9 @@ The OpenSCAD MCP server requires explicit permission for each tool:
 ### Example Usage with Claude CLI
 
 ```bash
+# Start the server with uv and grant permissions
+# (Create mcp-config.json with uv configuration first)
+
 # Grant permission for a single tool
 claude --config mcp-config.json \
        --allowedTools openscad-mcp:check_openscad \
@@ -70,6 +105,21 @@ claude --config mcp-config.json \
 claude --config mcp-config.json \
        --allowedTools openscad-mcp:check_openscad,openscad-mcp:render_single,openscad-mcp:render_perspectives \
        "Create a gear model and show it from multiple angles"
+```
+
+**Create `mcp-config.json` for Claude CLI:**
+```json
+{
+  "mcpServers": {
+    "openscad-mcp": {
+      "command": "uv",
+      "args": ["run", "--with", "git+https://github.com/quellant/openscad-mcp.git", "openscad-mcp"],
+      "env": {
+        "OPENSCAD_PATH": "/usr/bin/openscad"
+      }
+    }
+  }
+}
 ```
 
 ### Testing with Permissions
@@ -104,43 +154,47 @@ Use the provided test script to verify proper permission configuration:
 
 ## 📋 Prerequisites
 
-- **Python 3.9+** 
+- **Python 3.10+** (required for FastMCP 2.11.3)
 - **OpenSCAD** ([Download from openscad.org](https://openscad.org))
-- **FastMCP 2.11.3**
-- **Pydantic 2.11.7**
+- **uv** ([Install from docs.astral.sh](https://docs.astral.sh/uv/getting-started/installation/)) - *Only needed for zero-installation execution*
+
+*No additional Python packages required when using `uv` - all dependencies are handled automatically!*
 
 ## 📦 Installation
 
-### Method 1: Using uv (Recommended)
+### Method 1: Zero-Installation with `uv` (Recommended)
+
+No installation required! Just run directly:
 
 ```bash
-# Install with uv including all dependencies
-uv pip install -e .
+# Run directly from GitHub - uv handles everything automatically
+uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 
-# Or install with specific dependencies
-uv pip install fastmcp==2.11.3 pydantic==2.11.7 Pillow python-dotenv PyYAML
+# All dependencies (FastMCP 2.11.3, Pydantic 2.11.7, etc.) are resolved and installed automatically
 ```
 
-### Method 2: Using pip
+### Method 2: Local Development with `uv`
 
 ```bash
-# Install with pip
+# Clone for local development
+git clone https://github.com/quellant/openscad-mcp.git
+cd openscad-mcp
+
+# Run with uv (installs dependencies automatically)
+uv run openscad-mcp
+
+# Or run as module
+uv run python -m openscad_mcp
+```
+
+### Method 3: Traditional pip Installation
+
+```bash
+# Only if you can't use uv
+git clone https://github.com/quellant/openscad-mcp.git
+cd openscad-mcp
 pip install -e .
-
-# Or install dependencies manually
-pip install fastmcp==2.11.3 pydantic==2.11.7 Pillow python-dotenv PyYAML
-```
-
-### Method 3: Using FastMCP CLI
-
-```bash
-# Install server to MCP configuration
-fastmcp install mcp-json openscad_mcp/server.py \
-  --name "OpenSCAD MCP Server" \
-  --with fastmcp==2.11.3 \
-  --with pydantic==2.11.7 \
-  --with Pillow \
-  --env OPENSCAD_PATH=/usr/bin/openscad
+python -m openscad_mcp
 ```
 
 ## ⚙️ Configuration
@@ -454,7 +508,7 @@ Contributions are welcome! Please:
 
 ## 📮 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/openscad-mcp-server/issues)
+- **Issues**: [GitHub Issues](https://github.com/quellant/openscad-mcp/issues)
 - **Documentation**: [Full API Documentation](./API.md)
 - **Test Report**: [Integration Test Results](./openscad_mcp_test_report.md)
 
