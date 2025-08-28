@@ -60,6 +60,19 @@ class TransportType(str, Enum):
     SSE = "sse"
 
 
+class PredefinedView(str, Enum):
+    """Predefined camera views for rendering."""
+
+    FRONT = "front"
+    BACK = "back"
+    LEFT = "left"
+    RIGHT = "right"
+    TOP = "top"
+    BOTTOM = "bottom"
+    ISOMETRIC = "isometric"
+    DIMETRIC = "dimetric"
+
+
 # ============================================================================
 # Base Models
 # ============================================================================
@@ -127,9 +140,53 @@ class ImageSize(BaseModel):
     width: int = Field(800, ge=1, le=4096, description="Image width in pixels")
     height: int = Field(600, ge=1, le=4096, description="Image height in pixels")
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_image_size_input(cls, data: Any) -> Any:
+        """Parse various input formats for ImageSize.
+        
+        Handles:
+        - Dict format: {"width": 800, "height": 600}
+        - List format: [800, 600]
+        - String representation of list: "[800, 600]"
+        - String representation of dict: '{"width": 800, "height": 600}'
+        """
+        # If it's already a dict with width/height keys, return as is
+        if isinstance(data, dict) and "width" in data and "height" in data:
+            return data
+        
+        # If it's a string, try to parse it as JSON
+        if isinstance(data, str):
+            try:
+                # Remove any whitespace and try to parse
+                data = data.strip()
+                parsed = json.loads(data)
+                
+                # If parsed result is a list with 2 elements
+                if isinstance(parsed, list) and len(parsed) == 2:
+                    return {"width": parsed[0], "height": parsed[1]}
+                # If parsed result is a dict
+                elif isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                # If JSON parsing fails, it might be a malformed string
+                raise ValueError(f"Cannot parse '{data}' as a valid ImageSize")
+        
+        # If it's a list or tuple with 2 elements
+        if isinstance(data, (list, tuple)) and len(data) == 2:
+            return {"width": data[0], "height": data[1]}
+        
+        # If none of the above, return as is and let Pydantic handle it
+        return data
+
     def to_tuple(self) -> Tuple[int, int]:
         """Convert to tuple format."""
         return (self.width, self.height)
+
+    @classmethod
+    def from_tuple(cls, values: Tuple[int, int]) -> "ImageSize":
+        """Create from tuple."""
+        return cls(width=values[0], height=values[1])
 
     @field_validator("width", "height")
     @classmethod
@@ -178,6 +235,10 @@ class RenderParams(BaseModel):
 class SingleRenderParams(RenderParams):
     """Parameters for single view rendering."""
 
+    view: Optional[Union[PredefinedView, str]] = Field(
+        None, 
+        description="Predefined view name (front, back, left, right, top, bottom, isometric, dimetric) - overrides camera settings if provided"
+    )
     camera_position: Union[Vector3D, List[float], str] = Field(
         default_factory=lambda: Vector3D(x=70, y=70, z=70),
         description="Camera position in 3D space (accepts Vector3D, list [x,y,z], or JSON string)",

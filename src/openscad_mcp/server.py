@@ -382,19 +382,7 @@ def parse_image_size_param(param: Union[List[int], str, tuple, None], default: L
     if isinstance(param, str):
         param = param.strip()
         
-        # Try "800x600" format
-        if 'x' in param:
-            parts = param.split('x')
-            if len(parts) == 2:
-                return [int(parts[0].strip()), int(parts[1].strip())]
-        
-        # Try "800,600" format
-        if ',' in param:
-            parts = param.split(',')
-            if len(parts) == 2:
-                return [int(parts[0].strip()), int(parts[1].strip())]
-        
-        # Try JSON format
+        # Try JSON format first (handles "[1200, 900]")
         if param.startswith('['):
             try:
                 parsed = json.loads(param)
@@ -402,6 +390,18 @@ def parse_image_size_param(param: Union[List[int], str, tuple, None], default: L
                     return [int(parsed[0]), int(parsed[1])]
             except (json.JSONDecodeError, ValueError):
                 pass
+        
+        # Try "800x600" format
+        if 'x' in param:
+            parts = param.split('x')
+            if len(parts) == 2:
+                return [int(parts[0].strip()), int(parts[1].strip())]
+        
+        # Try "800,600" format (only if not JSON-like)
+        if ',' in param and not param.startswith('['):
+            parts = param.split(',')
+            if len(parts) == 2:
+                return [int(parts[0].strip()), int(parts[1].strip())]
     
     raise ValueError(f"Cannot parse image size from {param}")
 
@@ -642,7 +642,7 @@ async def render_single(
     camera_position: Union[str, List[float], Dict[str, float], None] = None,
     camera_target: Union[str, List[float], Dict[str, float], None] = None,
     camera_up: Union[str, List[float], Dict[str, float], None] = None,
-    image_size: Optional[List[int]] = None,
+    image_size: Union[str, List[int], tuple, None] = None,
     color_scheme: str = "Cornfield",
     variables: Optional[Dict[str, Any]] = None,
     auto_center: bool = False,
@@ -654,12 +654,12 @@ async def render_single(
     
     Args:
         scad_content: OpenSCAD code to render (mutually exclusive with scad_file)
-        scad_file: Path to OpenSCAD file (mutually exclusive with scad_content)
+        scad_file: Path to OpenSCAD file (mutually exclusive with scad_content)  
         view: Predefined view name ("front", "back", "left", "right", "top", "bottom", "isometric", "dimetric")
         camera_position: Camera position - accepts [x,y,z] list, JSON string "[x,y,z]", or dict {"x":x,"y":y,"z":z} (default: [70, 70, 70])
         camera_target: Camera look-at point - accepts [x,y,z] list, JSON string, or dict (default: [0, 0, 0])
         camera_up: Camera up vector - accepts [x,y,z] list, JSON string, or dict (default: [0, 0, 1])
-        image_size: Image dimensions [width, height] (default: [800, 600])
+        image_size: Image dimensions - accepts [width, height] list, JSON string "[width, height]", "widthxheight", or tuple (default: [800, 600])
         color_scheme: OpenSCAD color scheme (default: "Cornfield")
         variables: Variables to pass to OpenSCAD
         auto_center: Auto-center the model
