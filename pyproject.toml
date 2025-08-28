@@ -9,10 +9,10 @@ description = "A Model Context Protocol (MCP) server for OpenSCAD 3D modeling an
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "OpenSCAD MCP Team", email = "contact@example.com" }
+    { name = "Coop" }
 ]
 maintainers = [
-    { name = "OpenSCAD MCP Team", email = "contact@example.com" }
+    
 ]
 keywords = [
     "mcp",
@@ -29,8 +29,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -38,7 +36,7 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: 3D Modeling",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=2.11.3",
     "pydantic>=2.11.7",
@@ -114,7 +112,7 @@ packages = ["src/openscad_mcp"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py310"
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -137,10 +135,10 @@ ignore = [
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
