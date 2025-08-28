@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+test-env/
+
+# Testing
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Documentation build
+docs/_build/
+site/
+
+# Environment files
+.env
+.env.*
+
+# Temporary files
+*.log
+*.tmp
+temp/
+tmp/
+cache/
+
+# Project specific
+test_output/
+renders/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.stl
+*.3mf
+
+# CI/CD
+.travis.yml
+.gitlab-ci.yml
+
+# Package management
+Pipfile
+Pipfile.lock
+poetry.lock
