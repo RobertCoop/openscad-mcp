@@ -1,0 +1,237 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openscad-mcp/
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install build dependencies
+        run: |
+          pip install build twine
+      
+      - name: Set version from tag or input
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+          # Update version in __init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$VERSION\"/" src/openscad_mcp/__init__.py
+          
+          # Update version in pyproject.toml
+          sed -i "s/version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+      
+      - name: Build package
+        run: python -m build
+      
+      - name: Check distribution
+        run: |
+          twine check dist/*
+          ls -lh dist/
+      
+      # Publish to Test PyPI first
+      - name: Publish to Test PyPI
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+        continue-on-error: true
+      
+      # Publish to PyPI
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+      
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ env.VERSION }}
+          path: dist/
+
+  create-github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+      
+      - name: Generate release notes
+        run: |
+          cat > release_notes.md << EOF
+          # OpenSCAD MCP Server v${{ env.VERSION }}
+          
+          ## Installation
+          
+          ### Using uv (recommended)
+          \`\`\`bash
+          # Install directly from PyPI
+          uv pip install openscad-mcp
+          
+          # Or run directly with uvx
+          uvx openscad-mcp
+          \`\`\`
+          
+          ### Using pip
+          \`\`\`bash
+          pip install openscad-mcp
+          \`\`\`
+          
+          ### From GitHub Release
+          \`\`\`bash
+          # Download wheel from this release
+          pip install openscad_mcp-${{ env.VERSION }}-py3-none-any.whl
+          \`\`\`
+          
+          ## What's Changed
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          
+          ## Docker Image
+          \`\`\`bash
+          docker pull ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+          \`\`\`
+          
+          ---
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ env.VERSION }}...HEAD
+          EOF
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ env.VERSION }}
+          body_path: release_notes.md
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(env.VERSION, 'rc') || contains(env.VERSION, 'beta') || contains(env.VERSION, 'alpha') }}
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+            type=raw,value=latest
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  test-installation:
+    name: Test Installation Methods
+    runs-on: ${{ matrix.os }}
+    needs: build-and-publish
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        method: [pip, uv]
+    
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install from Test PyPI with pip
+        if: matrix.method == 'pip' && github.event_name == 'workflow_dispatch'
+        run: |
+          pip install -i https://test.pypi.org/simple/ openscad-mcp
+          python -m openscad_mcp --help || true
+        continue-on-error: true
+      
+      - name: Install from PyPI with pip
+        if: matrix.method == 'pip' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          pip install openscad-mcp
+          python -m openscad_mcp --help || true
+      
+      - name: Install with uv
+        if: matrix.method == 'uv'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # From test PyPI
+            uv pip install --system -i https://test.pypi.org/simple/ openscad-mcp || true
+          else
+            # From PyPI
+            uv pip install --system openscad-mcp
+          fi
+          
+          # Test execution
+          python -m openscad_mcp --help || true
+        shell: bash
