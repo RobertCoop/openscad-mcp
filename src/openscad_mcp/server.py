@@ -120,6 +120,7 @@ def render_scad_to_png(
         # Build OpenSCAD command
         cmd = [
             openscad_cmd,
+            "--hardwarnings",
             "-o", str(output_path),
             "--imgsize", f"{image_size[0]},{image_size[1]}",
             "--colorscheme", color_scheme,
