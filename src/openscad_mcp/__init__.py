@@ -4,6 +4,8 @@ OpenSCAD MCP Server - A Model Context Protocol server for OpenSCAD rendering.
 This package provides MCP tools and resources for rendering 3D models using OpenSCAD.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from .server import mcp
 from .types import (
     ColorScheme,
@@ -14,7 +16,7 @@ from .types import (
     Vector3D,
 )
 
-__version__ = "0.2.0"
+__version__ = _pkg_version("openscad-mcp")
 __all__ = [
     "mcp",
     "ColorScheme",

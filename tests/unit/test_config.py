@@ -6,6 +6,7 @@ validation, and default values.
 """
 
 import os
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 import tempfile
@@ -235,7 +236,7 @@ class TestServerConfig:
         config = ServerConfig()
 
         assert config.name == "OpenSCAD MCP Server"
-        assert config.version == "0.2.0"
+        assert config.version == _pkg_version("openscad-mcp")
         assert config.transport == TransportType.STDIO
         assert config.host == "localhost"
         assert config.port == 8000

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
@@ -143,7 +144,7 @@ class ServerConfig(BaseModel):
         description="Server name",
     )
     version: str = Field(
-        "0.2.0",
+        default_factory=lambda: _pkg_version("openscad-mcp"),
         description="Server version",
     )
     transport: TransportType = Field(
