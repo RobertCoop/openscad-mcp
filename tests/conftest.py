@@ -8,12 +8,16 @@ Provides reusable test fixtures including:
 - Common test data
 """
 
+import struct
+
 import pytest
 import base64
 import tempfile
 from pathlib import Path
 from typing import Dict, Any
 from unittest.mock import Mock
+
+from openscad_mcp.utils.config import Config, CacheConfig, SecurityConfig, set_config
 
 
 @pytest.fixture
@@ -33,29 +37,39 @@ def sample_base64_image() -> str:
 @pytest.fixture
 def large_base64_image() -> str:
     """
-    Provide a large test image for size testing.
-    
-    Simulates a large image by repeating data to test size limits
-    and compression functionality.
-    
+    Generate a large but valid base64-encoded PNG image for size testing.
+
+    Uses Pillow to create a real 200x200 red PNG so that any code
+    attempting to decode or process the image (e.g. compression, saving)
+    will work with valid data.
+
     Returns:
-        Large base64 string simulating a big image
+        Base64-encoded PNG image string (~100KB+)
     """
-    # Generate large base64 string (simulate ~100KB image)
-    base_pattern = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-    return base_pattern * 2000  # Approximately 100KB
+    from PIL import Image
+    import io
+
+    img = Image.new("RGB", (200, 200), color="red")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 @pytest.fixture
 def medium_base64_image() -> str:
     """
-    Provide a medium-sized test image.
-    
+    Generate a medium-sized valid base64-encoded PNG image.
+
     Returns:
-        Medium base64 string (~10KB)
+        Base64-encoded PNG image string (~10KB)
     """
-    base_pattern = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-    return base_pattern * 200
+    from PIL import Image
+    import io
+
+    img = Image.new("RGB", (50, 50), color="blue")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 @pytest.fixture
@@ -95,7 +109,6 @@ def mock_config() -> Mock:
     mock.server.port = 8080
     mock.rendering = Mock()
     mock.rendering.max_concurrent = 4
-    mock.rendering.queue_size = 10
     mock.cache = Mock()
     mock.cache.enabled = True
     mock.openscad_path = None
@@ -346,8 +359,11 @@ def reset_environment(monkeypatch):
         monkeypatch: Pytest's monkeypatch fixture
     """
     # Clear any OpenSCAD-related environment variables
-    monkeypatch.setenv("OPENSCAD_PATH", "", prepend=False)
-    
+    monkeypatch.delenv("OPENSCAD_PATH", raising=False)
+
+    # Reset the global config singleton so tests don't get stale cached config
+    set_config(None)
+
     # Ensure clean temp directory
     import tempfile
     import shutil
@@ -357,7 +373,10 @@ def reset_environment(monkeypatch):
     temp_base.mkdir(exist_ok=True)
     
     yield
-    
+
+    # Reset config singleton again after test
+    set_config(None)
+
     # Cleanup after test
     if temp_base.exists():
         shutil.rmtree(temp_base, ignore_errors=True)
@@ -383,6 +402,160 @@ def mock_openscad_executable(monkeypatch):
     
     monkeypatch.setattr("subprocess.run", mock_run)
     return "/usr/bin/openscad"
+
+
+@pytest.fixture
+def configured_env(tmp_path, monkeypatch):
+    """Config with cache disabled and find_openscad mocked.
+
+    Sets up a real ``Config`` rooted in *tmp_path* with caching disabled
+    and patches ``find_openscad`` to return a deterministic path.
+
+    Returns:
+        tuple: (tmp_path, Config) for the test to use
+    """
+    cfg = Config(
+        temp_dir=tmp_path,
+        cache=CacheConfig(enabled=False, directory=tmp_path / "cache"),
+        security=SecurityConfig(allowed_paths=None),
+    )
+    set_config(cfg)
+    monkeypatch.setattr(
+        "openscad_mcp.server.find_openscad", lambda: "/usr/bin/openscad"
+    )
+    return tmp_path, cfg
+
+
+@pytest.fixture
+def configured_env_with_cache(tmp_path, monkeypatch):
+    """Config with caching enabled (max_size_mb=1) and find_openscad mocked.
+
+    Returns:
+        tuple: (tmp_path, Config, cache_dir) for the test to use
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cfg = Config(
+        temp_dir=tmp_path,
+        cache=CacheConfig(
+            enabled=True,
+            directory=cache_dir,
+            max_size_mb=100,  # minimum allowed by validator
+            ttl_hours=24,
+        ),
+        security=SecurityConfig(allowed_paths=None),
+    )
+    set_config(cfg)
+    monkeypatch.setattr(
+        "openscad_mcp.server.find_openscad", lambda: "/usr/bin/openscad"
+    )
+    return tmp_path, cfg, cache_dir
+
+
+@pytest.fixture
+def mock_subprocess_success():
+    """Factory returning a mock_run that writes a fake PNG to the ``-o`` path.
+
+    The returned callable can be used as ``side_effect`` for
+    ``subprocess.run`` patches.  It creates a tiny (1x1) valid PNG
+    at the output path so that any code checking for the file's
+    existence or reading its content will succeed.
+    """
+    # Minimal valid 1x1 white PNG (67 bytes)
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1), "white").save(buf, format="PNG")
+    fake_png_bytes = buf.getvalue()
+
+    def _factory(returncode=0, stderr="", stdout=""):
+        def mock_run(cmd, **kwargs):
+            # Write fake output to the -o path
+            if "-o" in cmd:
+                idx = cmd.index("-o")
+                out_path = Path(cmd[idx + 1])
+                if out_path.suffix == ".png":
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_bytes(fake_png_bytes)
+                elif out_path.suffix == ".stl":
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Write minimal ASCII STL
+                    out_path.write_text(
+                        "solid test\n"
+                        "  facet normal 0 0 1\n"
+                        "    outer loop\n"
+                        "      vertex 0 0 0\n"
+                        "      vertex 10 0 0\n"
+                        "      vertex 10 10 5\n"
+                        "    endloop\n"
+                        "  endfacet\n"
+                        "endsolid test\n"
+                    )
+                elif str(out_path) not in ("/dev/null", "NUL"):
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_bytes(b"fake-export-data")
+
+            result = Mock()
+            result.returncode = returncode
+            result.stderr = stderr
+            result.stdout = stdout
+            return result
+
+        return mock_run
+
+    return _factory
+
+
+@pytest.fixture
+def ascii_stl_content():
+    """Valid ASCII STL string with known bounding box (0-10 x 0-10 x 0-5)."""
+    return (
+        "solid test\n"
+        "  facet normal 0 0 1\n"
+        "    outer loop\n"
+        "      vertex 0 0 0\n"
+        "      vertex 10 0 0\n"
+        "      vertex 10 10 5\n"
+        "    endloop\n"
+        "  endfacet\n"
+        "  facet normal 0 0 1\n"
+        "    outer loop\n"
+        "      vertex 0 0 0\n"
+        "      vertex 10 10 5\n"
+        "      vertex 0 10 0\n"
+        "    endloop\n"
+        "  endfacet\n"
+        "endsolid test\n"
+    )
+
+
+@pytest.fixture
+def binary_stl_content():
+    """Valid binary STL bytes with 1 triangle.
+
+    Triangle: (0,0,0), (10,0,0), (10,10,5) with normal (0,0,1).
+    """
+    header = b"\x00" * 80  # 80-byte header
+    tri_count = struct.pack("<I", 1)
+    normal = struct.pack("<fff", 0.0, 0.0, 1.0)
+    v1 = struct.pack("<fff", 0.0, 0.0, 0.0)
+    v2 = struct.pack("<fff", 10.0, 0.0, 0.0)
+    v3 = struct.pack("<fff", 10.0, 10.0, 5.0)
+    attr = struct.pack("<H", 0)
+    return header + tri_count + normal + v1 + v2 + v3 + attr
+
+
+@pytest.fixture
+def scad_with_deps():
+    """SCAD content with include/use/commented-include statements."""
+    return (
+        'include <lib/utils.scad>\n'
+        'use <lib/shapes.scad>;\n'
+        '// include <lib/commented.scad>\n'
+        '/* use <lib/block_commented.scad> */\n'
+        'cube(10);\n'
+    )
 
 
 # Pytest configuration markers

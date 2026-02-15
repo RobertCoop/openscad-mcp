@@ -9,28 +9,18 @@ from .types import (
     ColorScheme,
     ImageSize,
     OpenSCADInfo,
-    RenderOperation,
-    RenderParams,
-    PerspectiveParams,
-    RenderResult,
-    SingleRenderParams,
-    TurntableParams,
     ServerInfo,
+    TransportType,
     Vector3D,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "mcp",
     "ColorScheme",
     "ImageSize",
     "OpenSCADInfo",
-    "RenderOperation",
-    "RenderParams",
-    "PerspectiveParams",
-    "RenderResult",
-    "SingleRenderParams",
-    "TurntableParams",
     "ServerInfo",
+    "TransportType",
     "Vector3D",
 ]

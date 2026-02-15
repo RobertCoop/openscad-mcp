@@ -345,49 +345,53 @@ class TestAsyncPerformance:
     async def test_concurrent_renders(self):
         """Test concurrent render operations."""
         from openscad_mcp.server import render_single
-        
+
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "base64imagedata"
-            
+
             # Create multiple render tasks
             tasks = []
             for i in range(10):
-                task = render_single(
+                task = render_fn(
                     scad_content=f"cube({i+10});",
                     camera_position=[i*10, i*10, i*10]
                 )
                 tasks.append(task)
-            
+
             # Run concurrently
             start = time.perf_counter()
             results = await asyncio.gather(*tasks)
             elapsed = time.perf_counter() - start
-            
+
             assert len(results) == 10
             assert all(r["success"] for r in results)
             assert elapsed < 1.0, f"Concurrent renders took {elapsed}s"
-    
+
     async def test_render_queue_performance(self):
         """Test performance with queued renders."""
         from openscad_mcp.server import render_single
-        
+
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             # Simulate varying render times
             mock_render.side_effect = lambda *args: "base64data"
-            
+
             tasks = []
             views = ["front", "top", "isometric", "left", "right"]
             for i, view in enumerate(views):
-                task = render_single(
+                task = render_fn(
                     scad_content=f"sphere({i*5});",
                     view=view
                 )
                 tasks.append(task)
-            
+
             start = time.perf_counter()
             results = await asyncio.gather(*tasks)
             elapsed = time.perf_counter() - start
-            
+
             assert len(results) == 5
             # Should handle 5 single renders efficiently
             assert elapsed < 2.0, f"Queue processing took {elapsed}s"

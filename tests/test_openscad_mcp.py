@@ -296,7 +296,7 @@ class TestDirectoryManagement:
     def test_fallback_directory_strategy(self):
         """Test fallback directory strategy when primary fails."""
         fallback_dirs = [
-            "/tmp/openscad-mcp",
+            Path("/tmp/openscad-mcp"),
             Path.home() / ".openscad-mcp" / "tmp",
             Path.cwd() / "tmp"
         ]
@@ -311,7 +311,7 @@ class TestDirectoryManagement:
                 test_file.unlink()
                 writable = True
                 break
-            except:
+            except (OSError, PermissionError):
                 continue
         
         assert writable, "No fallback directory is writable"
@@ -508,12 +508,14 @@ class TestIntegration:
     async def test_render_single_with_flexible_params(self):
         """Test render_single with all flexible parameter formats."""
         from openscad_mcp.server import render_single
-        
+        # Access underlying function (FastMCP wraps it as FunctionTool)
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "base64imagedata"
-            
+
             # Test with various parameter formats
-            result = await render_single(
+            result = await render_fn(
                 scad_content="cube(10);",
                 camera_position='{"x": 10, "y": 20, "z": 30}',  # JSON dict string
                 camera_target=[0, 0, 0],  # List
@@ -536,13 +538,14 @@ class TestIntegration:
     async def test_render_single_with_view_keywords(self):
         """Test render_single with view keyword parameter."""
         from openscad_mcp.server import render_single
-        
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "base64imagedata"
-            
+
             # Test multiple views
             for view_name in ["front", "top", "isometric"]:
-                result = await render_single(
+                result = await render_fn(
                     scad_content="sphere(10);",
                     view=view_name,
                     image_size=[800, 600],
@@ -558,12 +561,13 @@ class TestIntegration:
     async def test_render_with_output_format_auto(self):
         """Test automatic output format selection based on size."""
         from openscad_mcp.server import render_single
-        
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         # Small response
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "A" * 100  # Small image
-            
-            result = await render_single(
+
+            result = await render_fn(
                 scad_content="cube(5);",
                 output_format="auto"
             )
@@ -575,7 +579,8 @@ class TestIntegration:
     async def test_render_with_large_response(self):
         """Test handling of large responses with auto mode."""
         from openscad_mcp.server import render_single
-        
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             # Return very large image data
             mock_render.return_value = "A" * 50000
@@ -584,7 +589,7 @@ class TestIntegration:
                 with patch('openscad_mcp.server.Path') as mock_path:
                     mock_path.return_value = Path(tmpdir)
                     
-                    result = await render_single(
+                    result = await render_fn(
                         scad_content="complex_model();",
                         view="isometric",
                         output_format="auto"
@@ -643,9 +648,472 @@ class TestErrorHandling:
     async def test_render_missing_input(self):
         """Test render functions with missing required input."""
         from openscad_mcp.server import render_single
-        
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
         with pytest.raises(ValueError, match="Exactly one of scad_content or scad_file"):
-            await render_single()  # Missing both
-        
+            await render_fn()  # Missing both
+
         with pytest.raises(ValueError, match="Exactly one of scad_content or scad_file"):
-            await render_single(scad_content="cube();", scad_file="file.scad")  # Both provided
+            await render_fn(scad_content="cube();", scad_file="file.scad")  # Both
+
+
+# ============================================================================
+# Test render_scad_to_png Command Construction
+# ============================================================================
+
+
+class TestRenderScadToPngCommand:
+    """Test that render_scad_to_png constructs the correct subprocess commands.
+
+    These tests mock subprocess.run and find_openscad to verify that command-line
+    arguments are built correctly without needing an actual OpenSCAD installation.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self, monkeypatch, tmp_path):
+        """Set up common mocks for all tests in this class."""
+        from openscad_mcp.server import render_scad_to_png
+        from openscad_mcp.utils.config import Config, set_config
+
+        # Create a config with a real temp directory and caching disabled
+        # (caching would cause later tests to hit cache and skip subprocess)
+        from openscad_mcp.utils.config import CacheConfig
+
+        with patch("pathlib.Path.mkdir"):
+            config = Config(temp_dir=tmp_path, cache=CacheConfig(enabled=False))
+        set_config(config)
+
+        # Mock find_openscad to return a known path
+        monkeypatch.setattr(
+            "openscad_mcp.server.find_openscad",
+            lambda: "/usr/bin/openscad",
+        )
+
+        # Store tmp_path for individual tests
+        self._tmp_path = tmp_path
+
+    def _make_mock_result(self, output_path_str):
+        """Create a mock subprocess result that also writes a fake PNG file."""
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+        return mock_result
+
+    def test_camera_uses_six_value_format(self):
+        """Test that --camera uses the correct 6-value eye+center format."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            # Write a fake PNG to the output path
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(
+                scad_content="cube(10);",
+                camera_position=[10, 20, 30],
+                camera_target=[1, 2, 3],
+            )
+
+        cmd = captured_cmd["cmd"]
+        camera_args = [a for a in cmd if a.startswith("--camera=")]
+        assert len(camera_args) == 1
+        # Should be --camera=eye_x,eye_y,eye_z,center_x,center_y,center_z (6 values)
+        camera_val = camera_args[0].split("=", 1)[1]
+        parts = camera_val.split(",")
+        assert len(parts) == 6, f"Expected 6 camera values, got {len(parts)}: {camera_val}"
+        assert parts == ["10", "20", "30", "1", "2", "3"]
+
+    def test_d_flags_from_variables(self):
+        """Test that -D flags are properly constructed from variables dict."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(
+                scad_content="cube(size);",
+                variables={
+                    "size": 25,
+                    "label": "TEST",
+                    "enabled": True,
+                    "ratio": 3.14,
+                },
+            )
+
+        cmd = captured_cmd["cmd"]
+
+        # Collect all -D flag pairs
+        d_flags = {}
+        for i, arg in enumerate(cmd):
+            if arg == "-D" and i + 1 < len(cmd):
+                d_flags[cmd[i + 1].split("=")[0]] = cmd[i + 1]
+
+        assert "size=25" in d_flags["size"]
+        assert 'label="TEST"' in d_flags["label"]
+        assert "enabled=true" in d_flags["enabled"]
+        assert "ratio=3.14" in d_flags["ratio"]
+
+    def test_hardwarnings_included(self):
+        """Test that --hardwarnings is included in the command."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);")
+
+        cmd = captured_cmd["cmd"]
+        assert "--hardwarnings" in cmd
+
+    def test_imgsize_format(self):
+        """Test that --imgsize is properly formatted as 'W,H'."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(
+                scad_content="cube(10);",
+                image_size=[1920, 1080],
+            )
+
+        cmd = captured_cmd["cmd"]
+        imgsize_idx = cmd.index("--imgsize")
+        assert cmd[imgsize_idx + 1] == "1920,1080"
+
+    def test_temp_files_cleaned_up(self):
+        """Test that temporary files are cleaned up after rendering."""
+        from openscad_mcp.server import render_scad_to_png
+
+        temp_files_seen = {}
+
+        def mock_run(cmd, **kwargs):
+            # Find the SCAD input file (last argument)
+            scad_file = cmd[-1]
+            temp_files_seen["scad"] = scad_file
+            # Find the output file
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    temp_files_seen["output"] = cmd[i + 1]
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);")
+
+        # After render_scad_to_png returns, the TemporaryDirectory context
+        # manager should have cleaned up the temp files
+        assert "scad" in temp_files_seen
+        assert not Path(temp_files_seen["scad"]).exists(), (
+            "Temporary SCAD file should be cleaned up"
+        )
+
+    def test_timeout_passed_to_subprocess(self):
+        """Test that timeout is passed to subprocess.run."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_kwargs = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            mock_result = Mock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            return mock_result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);")
+
+        assert "timeout" in captured_kwargs
+        # Default timeout from RenderingConfig is 300 seconds
+        assert captured_kwargs["timeout"] == 300
+
+    def test_autocenter_and_viewall_flags(self):
+        """Test that --autocenter and --viewall are added when auto_center=True."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);", auto_center=True)
+
+        cmd = captured_cmd["cmd"]
+        assert "--autocenter" in cmd
+        assert "--viewall" in cmd
+
+    def test_colorscheme_flag(self):
+        """Test that --colorscheme is set correctly."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);", color_scheme="Sunset")
+
+        cmd = captured_cmd["cmd"]
+        cs_idx = cmd.index("--colorscheme")
+        assert cmd[cs_idx + 1] == "Sunset"
+
+
+# ============================================================================
+# Test Security Validations
+# ============================================================================
+
+
+class TestSecurityValidations:
+    """Test security validations in render_scad_to_png.
+
+    These tests verify that the actual validation logic in render_scad_to_png
+    properly rejects dangerous or malformed inputs. Mocking is limited to
+    find_openscad and subprocess so that the real validation code runs.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_mocks(self, monkeypatch, tmp_path):
+        """Set up common mocks for security tests."""
+        from openscad_mcp.utils.config import Config, SecurityConfig, set_config
+
+        self._tmp_path = tmp_path
+
+        # Mock find_openscad
+        monkeypatch.setattr(
+            "openscad_mcp.server.find_openscad",
+            lambda: "/usr/bin/openscad",
+        )
+
+        # Store monkeypatch for per-test config changes
+        self._monkeypatch = monkeypatch
+
+    def _set_config_with_security(self, allowed_paths=None, max_file_size_mb=10):
+        """Helper to set up config with specific security settings."""
+        from openscad_mcp.utils.config import Config, SecurityConfig, set_config
+
+        with patch("pathlib.Path.mkdir"):
+            config = Config(
+                temp_dir=self._tmp_path,
+                security=SecurityConfig(
+                    allowed_paths=allowed_paths,
+                    max_file_size_mb=max_file_size_mb,
+                ),
+            )
+        set_config(config)
+
+    def test_path_traversal_rejected_with_allowed_paths(self):
+        """Test that scad_file outside allowed_paths is rejected.
+
+        When allowed_paths is configured, accessing /etc/passwd or any
+        path outside the allowed list should raise ValueError.
+        """
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security(allowed_paths=["/home/user/scad", "/tmp/openscad"])
+
+        with pytest.raises(ValueError, match="not within allowed paths"):
+            render_scad_to_png(scad_file="/etc/passwd")
+
+    def test_path_traversal_dot_dot_rejected(self):
+        """Test that path traversal via '../' is rejected when allowed_paths is set."""
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security(allowed_paths=["/home/user/scad"])
+
+        with pytest.raises(ValueError, match="not within allowed paths"):
+            render_scad_to_png(scad_file="/home/user/scad/../../etc/passwd")
+
+    def test_allowed_path_is_accepted(self):
+        """Test that a file within allowed_paths passes validation.
+
+        The test should get past path validation and fail on the file not
+        existing (FileNotFoundError), not on the path check (ValueError).
+        """
+        from openscad_mcp.server import render_scad_to_png
+
+        allowed_dir = str(self._tmp_path / "scad_files")
+        self._set_config_with_security(allowed_paths=[allowed_dir])
+
+        scad_dir = self._tmp_path / "scad_files"
+        scad_dir.mkdir(parents=True, exist_ok=True)
+        scad_file = scad_dir / "model.scad"
+        scad_file.write_text("cube(10);")
+
+        # Should pass path validation but fail at subprocess (which we mock)
+        def mock_run(cmd, **kwargs):
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            mock_result = Mock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            return mock_result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            # This should NOT raise ValueError about allowed paths
+            result = render_scad_to_png(scad_file=str(scad_file))
+            assert isinstance(result, str)  # base64 string
+
+    def test_variable_name_injection_rejected(self):
+        """Test that variable names with special characters are rejected.
+
+        OpenSCAD variable names must match ^[a-zA-Z_][a-zA-Z0-9_]*$.
+        Injection attempts like 'size; rm -rf /' or 'x")+foo(' should be blocked.
+        """
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security()
+
+        malicious_names = [
+            "size; rm -rf /",
+            'x")+foo(',
+            "var name",
+            "123start",
+            "key=value",
+            "$(cmd)",
+            "a\nb",
+            "hello-world",
+            "foo.bar",
+        ]
+
+        for name in malicious_names:
+            with pytest.raises(ValueError, match="Invalid variable name"):
+                render_scad_to_png(
+                    scad_content="cube(10);",
+                    variables={name: 1},
+                )
+
+    def test_valid_variable_names_accepted(self):
+        """Test that valid OpenSCAD variable names are accepted."""
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security()
+
+        valid_names = ["size", "_private", "myVar2", "CONSTANT", "a", "_", "__double"]
+
+        for name in valid_names:
+            # Should pass variable name validation; will fail later at subprocess
+            # We mock subprocess to avoid that
+            def mock_run(cmd, **kwargs):
+                for i, arg in enumerate(cmd):
+                    if arg == "-o" and i + 1 < len(cmd):
+                        Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                        Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+                mock_result = Mock()
+                mock_result.returncode = 0
+                mock_result.stdout = ""
+                mock_result.stderr = ""
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                result = render_scad_to_png(
+                    scad_content="cube(10);",
+                    variables={name: 42},
+                )
+                assert isinstance(result, str)
+
+    def test_oversized_scad_content_rejected(self):
+        """Test that scad_content exceeding max_file_size_mb is rejected.
+
+        When security.max_file_size_mb is set to a small value, large
+        content should be rejected before any rendering occurs.
+        """
+        from openscad_mcp.server import render_scad_to_png
+
+        # Set max file size to 1 MB
+        self._set_config_with_security(max_file_size_mb=1)
+
+        # Create content just over 1 MB
+        oversized_content = "// " + "x" * (1 * 1024 * 1024 + 100)
+
+        with pytest.raises(ValueError, match="exceeds maximum allowed size"):
+            render_scad_to_png(scad_content=oversized_content)
+
+    def test_content_within_size_limit_accepted(self):
+        """Test that scad_content within max_file_size_mb is accepted."""
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security(max_file_size_mb=10)
+
+        small_content = "cube(10);"
+
+        def mock_run(cmd, **kwargs):
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            mock_result = Mock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            return mock_result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = render_scad_to_png(scad_content=small_content)
+            assert isinstance(result, str)
+
+    def test_no_path_restriction_without_allowed_paths(self):
+        """Test that any path is accepted when allowed_paths is None (default)."""
+        from openscad_mcp.server import render_scad_to_png
+
+        self._set_config_with_security(allowed_paths=None)
+
+        # Without allowed_paths, any file path should pass the path check.
+        # It will fail at a later stage (FileNotFoundError or subprocess),
+        # NOT with a ValueError about "not within allowed paths".
+        nonexistent = str(self._tmp_path / "nonexistent.scad")
+        with pytest.raises(FileNotFoundError, match="SCAD file not found"):
+            render_scad_to_png(scad_file=nonexistent)

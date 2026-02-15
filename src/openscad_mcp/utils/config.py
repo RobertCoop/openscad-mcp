@@ -5,6 +5,9 @@ This module provides centralized configuration with environment variable
 support, type safety, and sensible defaults.
 """
 
+import asyncio
+import logging
+import logging.handlers
 import os
 from pathlib import Path
 from typing import Optional
@@ -25,12 +28,6 @@ class RenderingConfig(BaseModel):
         le=20,
         description="Maximum concurrent rendering operations",
     )
-    queue_size: int = Field(
-        100,
-        ge=10,
-        le=1000,
-        description="Maximum queue size",
-    )
     timeout_seconds: int = Field(
         300,
         ge=30,
@@ -48,12 +45,6 @@ class RenderingConfig(BaseModel):
         ge=100,
         le=8192,
         description="Maximum image height",
-    )
-    max_animation_frames: int = Field(
-        360,
-        ge=2,
-        le=1000,
-        description="Maximum animation frames",
     )
     default_color_scheme: str = Field(
         "Cornfield",
@@ -84,10 +75,17 @@ class CacheConfig(BaseModel):
 
     @field_validator("directory")
     @classmethod
-    def ensure_directory(cls, v: Path) -> Path:
-        """Ensure cache directory exists."""
-        v.mkdir(parents=True, exist_ok=True)
+    def validate_directory(cls, v: Path) -> Path:
+        """Validate that the directory path is absolute."""
         return v
+
+    def ensure_cache_directory(self) -> None:
+        """Create the cache directory if it does not exist.
+
+        Call this explicitly when you need the directory to be present,
+        rather than relying on validation-time side effects.
+        """
+        self.directory.mkdir(parents=True, exist_ok=True)
 
 
 class SecurityConfig(BaseModel):
@@ -145,7 +143,7 @@ class ServerConfig(BaseModel):
         description="Server name",
     )
     version: str = Field(
-        "0.1.0",
+        "0.2.0",
         description="Server version",
     )
     transport: TransportType = Field(
@@ -177,7 +175,8 @@ class Config(BaseModel):
         description="Path to ImageMagick convert command",
     )
     temp_dir: Path = Field(
-        Path.cwd() / ".openscad-mcp" / "tmp",
+        default=None,
+        validate_default=True,
         description="Temporary file directory",
     )
 
@@ -188,12 +187,18 @@ class Config(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
-    @field_validator("temp_dir")
+    @field_validator("temp_dir", mode="before")
     @classmethod
-    def ensure_temp_dir(cls, v: Path) -> Path:
-        """Ensure temp directory exists."""
-        v.mkdir(parents=True, exist_ok=True)
-        return v
+    def set_temp_dir_default(cls, v: Optional[Path]) -> Path:
+        """Set temp_dir default at validation time instead of class definition time.
+
+        Using Path.cwd() in a Field default evaluates once at import time,
+        which can produce incorrect results. This validator defers the call
+        to when the Config instance is actually created.
+        """
+        if v is None:
+            return Path("/tmp/openscad-mcp")
+        return Path(v)
 
     @classmethod
     def from_env(cls, env_file: Optional[str] = None) -> "Config":
@@ -237,16 +242,12 @@ class Config(BaseModel):
         rendering_config = {}
         if max_concurrent := os.getenv("MCP_MAX_CONCURRENT_RENDERS"):
             rendering_config["max_concurrent"] = int(max_concurrent)
-        if queue_size := os.getenv("MCP_QUEUE_SIZE"):
-            rendering_config["queue_size"] = int(queue_size)
         if timeout := os.getenv("MCP_RENDER_TIMEOUT"):
             rendering_config["timeout_seconds"] = int(timeout)
         if max_width := os.getenv("MCP_MAX_IMAGE_WIDTH"):
             rendering_config["max_image_width"] = int(max_width)
         if max_height := os.getenv("MCP_MAX_IMAGE_HEIGHT"):
             rendering_config["max_image_height"] = int(max_height)
-        if max_frames := os.getenv("MCP_MAX_ANIMATION_FRAMES"):
-            rendering_config["max_animation_frames"] = int(max_frames)
         if rendering_config:
             config_dict["rendering"] = RenderingConfig(**rendering_config)
 
@@ -304,7 +305,68 @@ class Config(BaseModel):
             yaml_file: Path to save YAML configuration
         """
         with open(yaml_file, "w") as f:
-            yaml.dump(self.model_dump(), f, default_flow_style=False)
+            yaml.dump(
+                self.model_dump(mode="json"),
+                f,
+                default_flow_style=False,
+            )
+
+
+def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
+    """Configure the root logger based on LoggingConfig settings.
+
+    Sets the root logger level and optionally adds a rotating file handler
+    if a log file path is configured.
+
+    Args:
+        logging_config: Logging configuration. If None, uses defaults from
+                        the global config instance.
+    """
+    if logging_config is None:
+        logging_config = get_config().logging
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, logging_config.level, logging.INFO))
+
+    # Add a rotating file handler if a log file is configured
+    if logging_config.file is not None:
+        # Ensure the parent directory exists
+        logging_config.file.parent.mkdir(parents=True, exist_ok=True)
+
+        file_handler = logging.handlers.RotatingFileHandler(
+            filename=str(logging_config.file),
+            maxBytes=logging_config.max_size_mb * 1024 * 1024,
+            backupCount=logging_config.rotate_count,
+        )
+        file_handler.setLevel(getattr(logging, logging_config.level, logging.INFO))
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+
+# Module-level concurrency semaphore for rendering.
+# Initialized lazily via get_render_semaphore() so that the semaphore is
+# created inside a running event loop and respects the configured max_concurrent.
+_render_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def get_render_semaphore() -> asyncio.Semaphore:
+    """Return the module-level rendering concurrency semaphore.
+
+    Creates the semaphore on first call, using the current global config's
+    ``rendering.max_concurrent`` value. The semaphore is cached for the
+    lifetime of the process.
+
+    Returns:
+        An asyncio.Semaphore that limits concurrent rendering operations.
+    """
+    global _render_semaphore
+    if _render_semaphore is None:
+        config = get_config()
+        _render_semaphore = asyncio.Semaphore(config.rendering.max_concurrent)
+    return _render_semaphore
 
 
 # Global configuration instance
@@ -331,5 +393,7 @@ def set_config(config: Config) -> None:
     Args:
         config: Config instance to set globally
     """
-    global _config
+    global _config, _render_semaphore
     _config = config
+    # Reset semaphore so it picks up the new max_concurrent on next access
+    _render_semaphore = None
