@@ -1,7 +1,7 @@
 # OpenSCAD MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
-[![FastMCP](https://img.shields.io/badge/FastMCP-2.11.3-green)](https://gofastmcp.com)
+[![FastMCP](https://img.shields.io/badge/FastMCP-2.14.5-green)](https://gofastmcp.com)
 [![Tests](https://img.shields.io/badge/tests-300%20passing-brightgreen)](#testing)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)

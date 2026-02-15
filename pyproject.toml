@@ -38,7 +38,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "fastmcp>=2.11.3",
+    "fastmcp>=2.14.5",
     "pydantic>=2.11.7",
     "Pillow>=10.0.0",
     "pyyaml>=6.0",
