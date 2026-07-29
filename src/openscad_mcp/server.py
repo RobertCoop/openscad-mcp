@@ -385,11 +385,6 @@ def render_scad_to_png(
                     val_str = str(value)
                 cmd.extend(["-D", f"{key}={val_str}"])
 
-        # Add include paths for multi-file project support
-        if include_paths:
-            for inc_path in include_paths:
-                cmd.extend(["-I", str(inc_path)])
-
         # Add the SCAD file
         cmd.append(str(scad_path))
 
@@ -397,7 +392,8 @@ def render_scad_to_png(
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, check=False,
-                timeout=config.rendering.timeout_seconds
+                timeout=config.rendering.timeout_seconds,
+                env=_openscad_env(include_paths),
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError(
@@ -1416,11 +1412,6 @@ async def export_model(
                     val_str = str(value)
                 cmd.extend(["-D", f"{key}={val_str}"])
 
-        # Add include paths
-        if include_paths:
-            for inc_path in include_paths:
-                cmd.extend(["-I", str(inc_path)])
-
         cmd.append(str(scad_input_path))
 
         if ctx:
@@ -1435,6 +1426,7 @@ async def export_model(
                     text=True,
                     check=False,
                     timeout=config.rendering.timeout_seconds,
+                    env=_openscad_env(include_paths),
                 )
                 return result
             except subprocess.TimeoutExpired:
@@ -1816,7 +1808,35 @@ async def delete_model(
 # ============================================================================
 
 
-def _parse_openscad_stderr(stderr: str) -> Dict[str, List[str]]:
+def _openscad_env(
+    include_paths: Optional[List[str]] = None,
+) -> Optional[Dict[str, str]]:
+    """
+    Build the environment for an OpenSCAD subprocess, honouring include paths.
+
+    OpenSCAD has no include-path command line flag. Library and include
+    search paths come from the OPENSCADPATH environment variable, which is
+    os.pathsep-separated. Anything already set in the environment is kept and
+    searched after the caller's paths, so configuring OPENSCADPATH globally
+    still works.
+
+    Returns None when there is nothing to add, so the subprocess simply
+    inherits the parent environment.
+    """
+    if not include_paths:
+        return None
+    env = os.environ.copy()
+    paths = [str(p) for p in include_paths]
+    existing = env.get("OPENSCADPATH", "")
+    if existing:
+        paths.append(existing)
+    env["OPENSCADPATH"] = os.pathsep.join(paths)
+    return env
+
+
+def _parse_openscad_stderr(
+    stderr: str, returncode: Optional[int] = None
+) -> Dict[str, List[str]]:
     """
     Parse OpenSCAD stderr output into categorized message lists.
 
@@ -1848,6 +1868,18 @@ def _parse_openscad_stderr(stderr: str) -> Dict[str, List[str]]:
             deprecated.append(stripped)
         elif stripped.startswith("ERROR"):
             errors.append(stripped)
+
+    # A non-zero exit with nothing recognised means OpenSCAD failed for a
+    # reason this parser has no pattern for -- a rejected flag, a missing
+    # export format, an unreadable file. Returning an empty error list there
+    # is indistinguishable from "no problems found", which hides the failure
+    # entirely, so surface the raw output instead of dropping it.
+    if returncode is not None and returncode != 0 and not errors:
+        leftover = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+        detail = " | ".join(leftover[:5]) if leftover else "no diagnostic output"
+        errors.append(
+            f"OpenSCAD exited with status {returncode}: {detail}"
+        )
 
     return {
         "errors": errors,
@@ -2058,11 +2090,6 @@ async def validate_scad(
                     val_str = str(value)
                 cmd.extend(["-D", f"{key}={val_str}"])
 
-        # Add include paths
-        if include_paths:
-            for inc_path in include_paths:
-                cmd.extend(["-I", str(inc_path)])
-
         cmd.append(str(scad_input_path))
 
         if ctx:
@@ -2077,6 +2104,7 @@ async def validate_scad(
                     text=True,
                     check=False,
                     timeout=config.rendering.timeout_seconds,
+                    env=_openscad_env(include_paths),
                 )
                 return result
             except subprocess.TimeoutExpired:
@@ -2094,7 +2122,7 @@ async def validate_scad(
             scad_input_path.unlink()
 
         # Parse stderr for messages
-        parsed = _parse_openscad_stderr(result.stderr)
+        parsed = _parse_openscad_stderr(result.stderr, result.returncode)
 
         is_valid = (
             result.returncode == 0 and len(parsed["errors"]) == 0
@@ -2253,11 +2281,6 @@ async def analyze_model(
                     val_str = str(value)
                 cmd.extend(["-D", f"{key}={val_str}"])
 
-        # Add include paths
-        if include_paths:
-            for inc_path in include_paths:
-                cmd.extend(["-I", str(inc_path)])
-
         cmd.append(str(scad_input_path))
 
         if ctx:
@@ -2272,6 +2295,7 @@ async def analyze_model(
                     text=True,
                     check=False,
                     timeout=config.rendering.timeout_seconds,
+                    env=_openscad_env(include_paths),
                 )
                 return result
             except subprocess.TimeoutExpired:

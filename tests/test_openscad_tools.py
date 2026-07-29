@@ -329,6 +329,31 @@ class TestValidateScad:
         assert result["valid"] is True
         assert len(result["errors"]) == 0
 
+    async def test_unexplained_failure_is_not_silent(self, configured_env):
+        """A non-zero exit must always carry a reason.
+
+        OpenSCAD can fail for reasons the stderr parser has no pattern for --
+        a rejected flag, a missing export format, an unreadable file. Reporting
+        valid=False with an empty errors list there is indistinguishable from
+        "no problems found", so the raw output has to be surfaced instead.
+        """
+        def mock_run(cmd, **kwargs):
+            result = Mock()
+            result.returncode = 1
+            result.stderr = (
+                "Either add a valid suffix or specify one using the "
+                "--export-format option."
+            )
+            result.stdout = ""
+            return result
+
+        with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
+            result = await validate_scad_fn(scad_content="cube(10);")
+
+        assert result["valid"] is False
+        assert len(result["errors"]) >= 1, "an unexplained failure must not be silent"
+        assert "export-format" in " ".join(result["errors"])
+
     async def test_errors(self, configured_env):
         """When OpenSCAD reports errors, valid should be False and errors populated."""
         def mock_run(cmd, **kwargs):
