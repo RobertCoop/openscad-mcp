@@ -2044,6 +2044,7 @@ async def validate_scad(
         cmd = [
             openscad_cmd,
             "--hardwarnings",
+            "--export-format=asciistl",
             "-o", null_output,
         ]
 
