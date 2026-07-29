@@ -20,6 +20,7 @@ from unittest.mock import patch, Mock
 import pytest
 
 from openscad_mcp.server import (
+    _is_within,
     find_openscad,
     _compute_render_cache_key,
     _check_cache,
@@ -597,3 +598,95 @@ class TestRenderScadToPngGaps:
                 scad_content="cube(1);",
                 include_paths=["/other"],
             )
+
+
+# ============================================================================
+# TestAllowedPathsContainment
+# ============================================================================
+
+
+class TestAllowedPathsContainment:
+    """allowed_paths must bound access to real subtrees, not string prefixes.
+
+    Deciding containment with startswith lets any sibling whose name merely
+    begins with an allowed root pass the check, so a configured sandbox does
+    not actually hold. These pin the containment semantics.
+    """
+
+    def test_path_inside_root_is_allowed(self, tmp_path):
+        root = tmp_path / "project"
+        root.mkdir()
+        target = root / "model.scad"
+        target.write_text("cube(1);")
+
+        assert _is_within(target, root) is True
+
+    def test_sibling_sharing_a_name_prefix_is_rejected(self, tmp_path):
+        root = tmp_path / "project"
+        root.mkdir()
+        sibling = tmp_path / "project-secrets"
+        sibling.mkdir()
+        leak = sibling / "leak.scad"
+        leak.write_text("cube(1);")
+
+        assert _is_within(leak, root) is False
+
+    def test_plural_sibling_is_rejected(self, tmp_path):
+        """Allowing /x/project must not also allow /x/projects."""
+        root = tmp_path / "project"
+        root.mkdir()
+        plural = tmp_path / "projects"
+        plural.mkdir()
+
+        assert _is_within(plural / "a.scad", root) is False
+
+    def test_parent_traversal_is_rejected(self, tmp_path):
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        traversal = root / ".." / "outside" / "a.scad"
+        assert _is_within(traversal, root) is False
+
+    def test_symlink_out_of_root_is_rejected(self, tmp_path):
+        """Both sides are resolved, so a symlink cannot step outside."""
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.scad").write_text("cube(1);")
+
+        link = root / "escape"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        assert _is_within(link / "secret.scad", root) is False
+
+    def test_unrelated_path_is_rejected(self, tmp_path):
+        root = tmp_path / "project"
+        root.mkdir()
+
+        assert _is_within(tmp_path / "elsewhere.scad", root) is False
+
+    def test_render_rejects_prefix_sibling_end_to_end(self, tmp_path):
+        """The guard holds through a real tool call, not just the helper."""
+        root = tmp_path / "project"
+        root.mkdir()
+        sibling = tmp_path / "project-secrets"
+        sibling.mkdir()
+        leak = sibling / "leak.scad"
+        leak.write_text("cube(1);")
+
+        cfg = Config(
+            temp_dir=tmp_path / "tmp",
+            security=SecurityConfig(allowed_paths=[str(root)]),
+        )
+        set_config(cfg)
+        try:
+            with pytest.raises(ValueError, match="not within allowed paths"):
+                render_scad_to_png(scad_file=str(leak))
+        finally:
+            set_config(Config(temp_dir=tmp_path / "tmp"))
