@@ -318,9 +318,10 @@ def render_scad_to_png(
 
     if variables:
         for key in variables:
-            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
+            if not VARIABLE_NAME_RE.match(key):
                 raise ValueError(
-                    f"Invalid variable name '{key}': must match ^[a-zA-Z_][a-zA-Z0-9_]*$"
+                    f"Invalid variable name '{key}': "
+                    f"must match {VARIABLE_NAME_RE.pattern}"
                 )
 
     # Security: validate include_paths against allowed_paths
@@ -910,6 +911,16 @@ VIEW_PRESETS = {
 }
 
 # Quality presets mapping to OpenSCAD resolution variables
+# OpenSCAD variable names, including its special variables. A leading $
+# marks a special variable: $fn/$fa/$fs control tessellation, $t drives
+# animation, $vpr/$vpt/$vpd the viewport. Rejecting them made the tool's own
+# QUALITY_PRESETS unusable, since "draft" and "high" set $fn, $fa and $fs.
+#
+# Allowing $ is safe here: the name is handed to OpenSCAD as a single argv
+# element ("-D", "name=value") with no shell in between, so $ is an ordinary
+# character rather than an expansion. The rest of the name stays constrained.
+VARIABLE_NAME_RE = re.compile(r'^\$?[a-zA-Z_][a-zA-Z0-9_]*$')
+
 QUALITY_PRESETS = {
     "draft": {"$fn": 8, "$fa": 12, "$fs": 2},
     "normal": {},  # OpenSCAD defaults
@@ -1344,10 +1355,10 @@ async def export_model(
         # Security: validate variable names
         if variables:
             for key in variables:
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
+                if not VARIABLE_NAME_RE.match(key):
                     raise ValueError(
                         f"Invalid variable name '{key}': "
-                        f"must match ^[a-zA-Z_][a-zA-Z0-9_]*$"
+                        f"must match {VARIABLE_NAME_RE.pattern}"
                     )
 
         openscad_cmd = find_openscad()
@@ -1978,12 +1989,10 @@ async def validate_scad(
         # Security: validate variable names
         if variables:
             for key in variables:
-                if not re.match(
-                    r'^[a-zA-Z_][a-zA-Z0-9_]*$', key
-                ):
+                if not VARIABLE_NAME_RE.match(key):
                     raise ValueError(
                         f"Invalid variable name '{key}': "
-                        f"must match ^[a-zA-Z_][a-zA-Z0-9_]*$"
+                        f"must match {VARIABLE_NAME_RE.pattern}"
                     )
 
         openscad_cmd = find_openscad()
@@ -2180,12 +2189,10 @@ async def analyze_model(
         # Security: validate variable names
         if variables:
             for key in variables:
-                if not re.match(
-                    r'^[a-zA-Z_][a-zA-Z0-9_]*$', key
-                ):
+                if not VARIABLE_NAME_RE.match(key):
                     raise ValueError(
                         f"Invalid variable name '{key}': "
-                        f"must match ^[a-zA-Z_][a-zA-Z0-9_]*$"
+                        f"must match {VARIABLE_NAME_RE.pattern}"
                     )
 
         openscad_cmd = find_openscad()

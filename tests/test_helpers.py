@@ -21,6 +21,8 @@ import pytest
 
 from openscad_mcp.server import (
     _is_within,
+    VARIABLE_NAME_RE,
+    QUALITY_PRESETS,
     find_openscad,
     _compute_render_cache_key,
     _check_cache,
@@ -690,3 +692,59 @@ class TestAllowedPathsContainment:
                 render_scad_to_png(scad_file=str(leak))
         finally:
             set_config(Config(temp_dir=tmp_path / "tmp"))
+
+
+# ============================================================================
+# TestSpecialVariableNames
+# ============================================================================
+
+
+class TestSpecialVariableNames:
+    """OpenSCAD special variables must survive name validation.
+
+    $fn, $fa and $fs control tessellation and are what QUALITY_PRESETS sets,
+    so a validator that rejects $-prefixed names makes the tool's own quality
+    presets unusable. The name reaches OpenSCAD as one argv element
+    ("-D", "name=value") with no shell in between, so $ is an ordinary
+    character here rather than an expansion.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["$fn", "$fa", "$fs", "$t", "$vpr", "$vpt", "$vpd", "$preview"]
+    )
+    def test_special_variables_accepted(self, name):
+        assert VARIABLE_NAME_RE.match(name), f"{name} is a valid OpenSCAD variable"
+
+    @pytest.mark.parametrize("name", ["size", "width_2", "_leading", "A1"])
+    def test_ordinary_variables_still_accepted(self, name):
+        assert VARIABLE_NAME_RE.match(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "$fn; rm -rf /",   # command-injection shaped
+            "a b",             # embedded space
+            "x=1",             # embedded assignment
+            "$$fn",            # only one leading $ is meaningful
+            "-D",              # looks like a flag
+            "",                # empty
+            "1abc",            # leading digit
+            "$",               # $ alone is not a name
+            "$1",              # $ followed by a digit
+        ],
+    )
+    def test_malformed_names_still_rejected(self, name):
+        assert not VARIABLE_NAME_RE.match(name), f"{name!r} must stay rejected"
+
+    def test_quality_presets_pass_their_own_validator(self):
+        """Every preset the package ships must survive its own name check.
+
+        This is the regression that mattered: "draft" and "high" set $fn/$fa/$fs,
+        so the validator rejected the library's own presets.
+        """
+        for preset_name, variables in QUALITY_PRESETS.items():
+            for key in variables:
+                assert VARIABLE_NAME_RE.match(key), (
+                    f"preset {preset_name!r} sets {key!r}, "
+                    f"which its own validator rejects"
+                )
