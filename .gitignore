@@ -188,3 +188,5 @@ temp/
 *.gif
 !docs/images/**
 test_output/
+# Claude Code / Impeccable local caches
+.impeccable/
