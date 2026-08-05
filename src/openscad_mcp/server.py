@@ -2001,6 +2001,13 @@ async def validate_scad(
         cmd = [
             openscad_cmd,
             "--hardwarnings",
+            # csg rather than a mesh format: validation only needs the
+            # script parsed and evaluated, and asking for a mesh forces
+            # full CGAL geometry evaluation instead -- 19s versus 80ms on
+            # a real model here. A mesh format also fails outright on
+            # valid input that produces no 3D solid, so 2D-only models and
+            # empty ones would be reported invalid.
+            "--export-format=csg",
             "-o", null_output,
         ]
 

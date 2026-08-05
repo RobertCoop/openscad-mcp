@@ -329,6 +329,34 @@ class TestValidateScad:
         assert result["valid"] is True
         assert len(result["errors"]) == 0
 
+    async def test_uses_a_geometry_free_export_format(self, configured_env):
+        """Validation must not ask OpenSCAD for a mesh.
+
+        OpenSCAD infers the export format from the -o extension, and /dev/null
+        has none, so a format has to be named explicitly. It must not be a mesh
+        format: asking for one forces full CGAL geometry evaluation (19s versus
+        80ms on a real model) and fails outright on valid input that produces no
+        3D solid, so 2D-only and empty models would be reported invalid.
+        """
+        captured = []
+
+        def mock_run(cmd, **kwargs):
+            captured.extend(cmd)
+            result = Mock()
+            result.returncode = 0
+            result.stderr = ""
+            result.stdout = ""
+            return result
+
+        with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
+            await validate_scad_fn(scad_content="square([10,10]);")
+
+        fmt = [a for a in captured if a.startswith("--export-format=")]
+        assert fmt, "an explicit export format is required with -o /dev/null"
+        assert fmt[0] == "--export-format=csg"
+        for mesh in ("stl", "asciistl", "binstl", "off", "amf", "3mf"):
+            assert f"--export-format={mesh}" not in captured
+
     async def test_errors(self, configured_env):
         """When OpenSCAD reports errors, valid should be False and errors populated."""
         def mock_run(cmd, **kwargs):
