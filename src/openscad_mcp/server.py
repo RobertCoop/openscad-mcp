@@ -241,6 +241,28 @@ def _evict_cache_if_needed() -> None:
             continue
 
 
+def _is_within(resolved: Union[str, Path], allowed_root: Union[str, Path]) -> bool:
+    """
+    Report whether *resolved* lies inside *allowed_root*.
+
+    Containment is decided with Path.is_relative_to rather than by comparing
+    path strings with startswith. A string prefix test counts any sibling
+    whose name merely begins with the allowed root as being inside it, so
+    permitting /srv/project would also permit /srv/project-secrets and
+    /srv/projects -- meaning a configured sandbox does not actually hold.
+
+    Both sides are resolved first, so symlinks and ".." segments cannot be
+    used to step outside the root either.
+    """
+    try:
+        return Path(resolved).resolve().is_relative_to(
+            Path(allowed_root).resolve()
+        )
+    except (OSError, ValueError):
+        # An unresolvable or malformed root can never contain anything.
+        return False
+
+
 def render_scad_to_png(
     scad_content: Optional[str] = None,
     scad_file: Optional[str] = None,
@@ -279,7 +301,7 @@ def render_scad_to_png(
         resolved_path = Path(scad_file).resolve()
         if config.security.allowed_paths:
             if not any(
-                str(resolved_path).startswith(str(Path(ap).resolve()))
+                _is_within(resolved_path, ap)
                 for ap in config.security.allowed_paths
             ):
                 raise ValueError(
@@ -306,7 +328,7 @@ def render_scad_to_png(
         for inc_path in include_paths:
             resolved_inc = Path(inc_path).resolve()
             if not any(
-                str(resolved_inc).startswith(str(Path(ap).resolve()))
+                _is_within(resolved_inc, ap)
                 for ap in config.security.allowed_paths
             ):
                 raise ValueError(
@@ -1301,7 +1323,7 @@ async def export_model(
             resolved_path = Path(scad_file).resolve()
             if config.security.allowed_paths:
                 if not any(
-                    str(resolved_path).startswith(str(Path(ap).resolve()))
+                    _is_within(resolved_path, ap)
                     for ap in config.security.allowed_paths
                 ):
                     raise ValueError(
@@ -1931,9 +1953,7 @@ async def validate_scad(
             resolved_path = Path(scad_file).resolve()
             if config.security.allowed_paths:
                 if not any(
-                    str(resolved_path).startswith(
-                        str(Path(ap).resolve())
-                    )
+                    _is_within(resolved_path, ap)
                     for ap in config.security.allowed_paths
                 ):
                     raise ValueError(
@@ -2135,9 +2155,7 @@ async def analyze_model(
             resolved_path = Path(scad_file).resolve()
             if config.security.allowed_paths:
                 if not any(
-                    str(resolved_path).startswith(
-                        str(Path(ap).resolve())
-                    )
+                    _is_within(resolved_path, ap)
                     for ap in config.security.allowed_paths
                 ):
                     raise ValueError(
@@ -2777,7 +2795,7 @@ async def get_project_files(
         # Security: validate against allowed_paths
         if config.security.allowed_paths:
             if not any(
-                str(resolved_dir).startswith(str(Path(ap).resolve()))
+                _is_within(resolved_dir, ap)
                 for ap in config.security.allowed_paths
             ):
                 raise ValueError(
