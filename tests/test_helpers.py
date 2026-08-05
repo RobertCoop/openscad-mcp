@@ -12,6 +12,7 @@ Covers:
 
 import base64
 import struct
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -507,13 +508,23 @@ class TestCacheKeyAndGaps:
 class TestRenderScadToPngGaps:
     """Tests for render_scad_to_png edge cases and security."""
 
-    def test_include_paths_flags(self, configured_env, mock_subprocess_success):
-        """Include paths produce the correct -I flags in the command."""
+    def test_include_paths_use_openscadpath(
+        self, configured_env, mock_subprocess_success
+    ):
+        """Include paths travel via OPENSCADPATH, not a command line flag.
+
+        OpenSCAD has no include-path flag -- passing -I makes it exit 1 with
+        "unrecognised option" before it reads any input, so include paths have
+        to go through the OPENSCADPATH environment variable instead.
+        """
         _tmp_path, _cfg = configured_env
         captured_cmd = []
+        captured_env = {}
 
         def spy_run(cmd, **kwargs):
             captured_cmd.extend(cmd)
+            if kwargs.get("env"):
+                captured_env.update(kwargs["env"])
             return mock_subprocess_success()(cmd, **kwargs)
 
         with patch("subprocess.run", side_effect=spy_run):
@@ -522,12 +533,26 @@ class TestRenderScadToPngGaps:
                 include_paths=["/path/a", "/path/b"],
             )
 
-        assert "-I" in captured_cmd
-        idx_a = captured_cmd.index("-I")
-        assert captured_cmd[idx_a + 1] == "/path/a"
-        # Find the second -I
-        idx_b = captured_cmd.index("-I", idx_a + 1)
-        assert captured_cmd[idx_b + 1] == "/path/b"
+        assert "-I" not in captured_cmd
+        entries = captured_env["OPENSCADPATH"].split(os.pathsep)
+        assert "/path/a" in entries
+        assert "/path/b" in entries
+
+    def test_no_include_paths_inherits_environment(
+        self, configured_env, mock_subprocess_success
+    ):
+        """Without include paths the subprocess inherits the parent env."""
+        _tmp_path, _cfg = configured_env
+        captured = {}
+
+        def spy_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock_subprocess_success()(cmd, **kwargs)
+
+        with patch("subprocess.run", side_effect=spy_run):
+            render_scad_to_png(scad_content="cube(1);")
+
+        assert captured["env"] is None
 
     def test_timeout_error(self, configured_env):
         """subprocess.TimeoutExpired is converted to RuntimeError."""
