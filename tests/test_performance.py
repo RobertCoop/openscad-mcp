@@ -247,7 +247,7 @@ class TestMemoryEfficiency:
         memory_used_mb = (peak - baseline) / 1024 / 1024
         assert memory_used_mb < 50, f"Used {memory_used_mb:.2f}MB, expected < 50MB"
     
-    @patch('openscad_mcp.server.Image')
+    @patch('openscad_mcp.server.PILImage')
     def test_compression_memory_efficiency(self, mock_image_class):
         """Test memory efficiency of compression."""
         import tracemalloc
@@ -349,7 +349,7 @@ class TestAsyncPerformance:
         render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
-            mock_render.return_value = "base64imagedata"
+            mock_render.return_value = "AAAA"
 
             # Create multiple render tasks
             tasks = []
@@ -366,7 +366,11 @@ class TestAsyncPerformance:
             elapsed = time.perf_counter() - start
 
             assert len(results) == 10
-            assert all(r["success"] for r in results)
+            # render_single returns a list; metadata is a JSON string as the last element
+            for r in results:
+                assert isinstance(r, list)
+                metadata = json.loads(r[-1])
+                assert metadata["success"]
             assert elapsed < 1.0, f"Concurrent renders took {elapsed}s"
 
     async def test_render_queue_performance(self):
@@ -377,7 +381,7 @@ class TestAsyncPerformance:
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             # Simulate varying render times
-            mock_render.side_effect = lambda *args: "base64data"
+            mock_render.side_effect = lambda *args: "AAAA"
 
             tasks = []
             views = ["front", "top", "isometric", "left", "right"]

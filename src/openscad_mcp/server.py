@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Tuple
 
 from fastmcp import Context, FastMCP
-from PIL import Image
+from fastmcp.utilities.types import Image as MCPImage
+from PIL import Image as PILImage
 import json
 
 logger = logging.getLogger(__name__)
@@ -733,7 +734,7 @@ def compress_base64_image(base64_data: str, quality: int = 85, optimize: bool = 
     try:
         # Decode base64 to image
         image_data = base64.b64decode(base64_data)
-        image = Image.open(io.BytesIO(image_data))
+        image = PILImage.open(io.BytesIO(image_data))
         
         # Compress using PNG optimization
         buffer = io.BytesIO()
@@ -907,10 +908,9 @@ async def render_single(
     variables: Optional[Dict[str, Any]] = None,
     auto_center: bool = False,
     quality: Optional[str] = None,
-    output_format: Optional[str] = "auto",
     include_paths: Optional[List[str]] = None,
     ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+):
     """
     Render a single view from OpenSCAD code or file.
 
@@ -926,12 +926,11 @@ async def render_single(
         variables: Variables to pass to OpenSCAD
         auto_center: Auto-center the model
         quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD defaults), or "high" (slow, high detail). User-provided variables override quality preset values.
-        output_format: Output format - "auto", "base64", "file_path", or "compressed" (default: "auto")
         include_paths: Additional include paths for OpenSCAD via -I flags, enabling multi-file project support
         ctx: MCP context for logging
 
     Returns:
-        Dict with base64-encoded PNG image or file path
+        List containing the rendered PNG image and metadata
     """
     if ctx:
         await ctx.info("Starting OpenSCAD render...")
@@ -986,7 +985,7 @@ async def render_single(
 
     try:
         # Run rendering in executor to avoid blocking the event loop
-        image_data = await asyncio.get_running_loop().run_in_executor(
+        image_b64 = await asyncio.get_running_loop().run_in_executor(
             None,
             render_scad_to_png,
             scad_content,
@@ -1004,43 +1003,26 @@ async def render_single(
         if ctx:
             await ctx.info("Rendering completed successfully")
 
-        # Apply response size management for single image
-        if output_format and output_format != "base64":
-            managed_result = manage_response_size(
-                {"render": image_data},
-                output_format=output_format,
-                max_size=20000,
-                ctx=ctx
-            )
-
-            # Check if we got extended format
-            if isinstance(managed_result, dict) and "render" in managed_result:
-                result_data = managed_result["render"]
-                if isinstance(result_data, dict):
-                    # Extended format with metadata
-                    return {
-                        "success": True,
-                        **result_data,  # Include type, data/path, mime_type
-                        "operation_id": str(uuid.uuid4()),
-                        "output_format": output_format if output_format != "auto" else "optimized"
-                    }
-
-        # Default base64 response (backwards compatible)
-        return {
-            "success": True,
-            "data": image_data,
-            "mime_type": "image/png",
-            "operation_id": str(uuid.uuid4()),
-        }
+        # Return as MCPImage so FastMCP sends proper ImageContent to clients
+        image_bytes = base64.b64decode(image_b64)
+        return [
+            MCPImage(data=image_bytes, format="png"),
+            json.dumps({
+                "success": True,
+                "operation_id": str(uuid.uuid4()),
+            }),
+        ]
 
     except Exception as e:
         if ctx:
             await ctx.error(f"Rendering failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "operation_id": str(uuid.uuid4()),
-        }
+        return [
+            json.dumps({
+                "success": False,
+                "error": str(e),
+                "operation_id": str(uuid.uuid4()),
+            })
+        ]
 
 
 @mcp.tool()
@@ -1052,10 +1034,9 @@ async def render_perspectives(
     color_scheme: Optional[str] = None,
     variables: Optional[Dict[str, Any]] = None,
     quality: Optional[str] = None,
-    output_format: Optional[str] = "auto",
     include_paths: Optional[List[str]] = None,
     ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+):
     """
     Render multiple standard views of an OpenSCAD model in a single call.
 
@@ -1076,15 +1057,12 @@ async def render_perspectives(
         quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD
             defaults), or "high" (slow, high detail). User-provided variables
             override quality preset values.
-        output_format: Output format - "auto", "base64", "file_path", or
-            "compressed" (default: "auto")
         include_paths: Additional include paths for OpenSCAD via -I flags,
             enabling multi-file project support
         ctx: MCP context for logging
 
     Returns:
-        Dict with success status, views dict mapping view names to image data
-        or file paths, count of rendered views, and output format used
+        List of rendered PNG images and metadata
     """
     try:
         # Validate input
@@ -1141,7 +1119,7 @@ async def render_perspectives(
             """Render a single view, returning (view_name, result_or_error)."""
             preset_pos, preset_target, preset_up = VIEW_PRESETS[view_name]
             try:
-                image_data = render_scad_to_png(
+                image_b64 = render_scad_to_png(
                     scad_content=scad_content,
                     scad_file=scad_file,
                     camera_position=list(preset_pos),
@@ -1153,7 +1131,7 @@ async def render_perspectives(
                     auto_center=True,
                     include_paths=include_paths,
                 )
-                return (view_name, {"success": True, "data": image_data})
+                return (view_name, {"success": True, "data": image_b64})
             except Exception as e:
                 return (view_name, {"success": False, "error": str(e)})
 
@@ -1166,66 +1144,45 @@ async def render_perspectives(
         results = await asyncio.gather(*tasks)
 
         # Collect successful renders and errors
-        successful_views = {}
+        response_items: list = []
         errors = {}
+        success_count = 0
         for view_name, result in results:
             if result["success"]:
-                successful_views[view_name] = result["data"]
+                image_bytes = base64.b64decode(result["data"])
+                response_items.append(f"View: {view_name}")
+                response_items.append(MCPImage(data=image_bytes, format="png"))
+                success_count += 1
             else:
                 errors[view_name] = result["error"]
 
-        # Apply response size management to successful views
-        resolved_format = output_format or "auto"
-        if successful_views:
-            managed_views = manage_response_size(
-                successful_views,
-                output_format=resolved_format,
-                max_size=25000,
-                ctx=ctx,
-            )
-        else:
-            managed_views = {}
-
-        # Merge errors into the views dict
-        view_results = dict(managed_views) if isinstance(managed_views, dict) else {}
-        for view_name, error_msg in errors.items():
-            view_results[view_name] = {"error": error_msg}
-
-        # Determine the actual output format used
-        if successful_views and isinstance(managed_views, dict):
-            sample = next(iter(managed_views.values()))
-            if isinstance(sample, dict) and "type" in sample:
-                actual_format = sample["type"]
-            elif isinstance(sample, str):
-                actual_format = "base64"
-            else:
-                actual_format = resolved_format
-        else:
-            actual_format = resolved_format
-
         if ctx:
-            success_count = len(successful_views)
             error_count = len(errors)
             msg = f"Rendered {success_count}/{len(views)} view(s) successfully"
             if error_count > 0:
                 msg += f" ({error_count} failed)"
             await ctx.info(msg)
 
-        return {
-            "success": len(errors) == 0,
-            "views": view_results,
-            "count": len(successful_views),
-            "errors": errors if errors else None,
-            "format": actual_format,
-        }
+        # Add metadata summary
+        response_items.append(
+            json.dumps({
+                "success": len(errors) == 0,
+                "count": success_count,
+                "errors": errors if errors else None,
+            })
+        )
+
+        return response_items
 
     except Exception as e:
         if ctx:
             await ctx.error(f"Render perspectives failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        return [
+            json.dumps({
+                "success": False,
+                "error": str(e),
+            })
+        ]
 
 
 @mcp.tool
@@ -2508,7 +2465,7 @@ async def compare_renders(
     image_size: Optional[str] = None,
     quality: Optional[str] = "draft",
     ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+):
     """
     Render two versions of a model for visual comparison.
 
@@ -2538,8 +2495,7 @@ async def compare_renders(
         ctx: MCP context for logging
 
     Returns:
-        Dict with success status, before and after image data dicts,
-        view name, and quality preset used
+        List with before/after images and metadata
     """
     try:
         # Validate input combinations
@@ -2661,36 +2617,39 @@ async def compare_renders(
         after_task = loop.run_in_executor(
             None, _render_after
         )
-        before_data, after_data = await asyncio.gather(
+        before_b64, after_b64 = await asyncio.gather(
             before_task, after_task
         )
 
         if ctx:
             await ctx.info("Comparison renders completed")
 
-        return {
-            "success": True,
-            "before": {
-                "data": before_data,
-                "mime_type": "image/png",
-            },
-            "after": {
-                "data": after_data,
-                "mime_type": "image/png",
-            },
-            "view": view or "isometric",
-            "quality": quality or "draft",
-        }
+        before_bytes = base64.b64decode(before_b64)
+        after_bytes = base64.b64decode(after_b64)
+
+        return [
+            "Before:",
+            MCPImage(data=before_bytes, format="png"),
+            "After:",
+            MCPImage(data=after_bytes, format="png"),
+            json.dumps({
+                "success": True,
+                "view": view or "isometric",
+                "quality": quality or "draft",
+            }),
+        ]
 
     except Exception as e:
         if ctx:
             await ctx.error(
                 f"Comparison render failed: {str(e)}"
             )
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        return [
+            json.dumps({
+                "success": False,
+                "error": str(e),
+            })
+        ]
 
 
 # ============================================================================

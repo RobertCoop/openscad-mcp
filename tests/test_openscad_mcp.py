@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 # Add parent directory to path to import the server module
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
+from fastmcp.utilities.types import Image as MCPImage
 from openscad_mcp.server import (
     parse_list_param,
     parse_dict_param, 
@@ -386,7 +387,7 @@ class TestResponseSizeManagement:
             assert output_dir.exists()
             assert os.path.exists(file_path)
     
-    @patch('openscad_mcp.server.Image')
+    @patch('openscad_mcp.server.PILImage')
     def test_compress_base64_image(self, mock_image_class):
         """Test base64 image compression."""
         # Mock PIL Image
@@ -512,7 +513,7 @@ class TestIntegration:
         render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
-            mock_render.return_value = "base64imagedata"
+            mock_render.return_value = "AAAA"
 
             # Test with various parameter formats
             result = await render_fn(
@@ -525,8 +526,12 @@ class TestIntegration:
                 auto_center=True
             )
             
-            assert result["success"] is True
-            assert "data" in result or "path" in result
+            # Result is now a list: [MCPImage(...), '{"success": true, ...}']
+            assert isinstance(result, list)
+            assert len(result) == 2
+            assert isinstance(result[0], MCPImage)
+            metadata = json.loads(result[-1])
+            assert metadata["success"] is True
             
             # Verify parameters were parsed correctly
             call_args = mock_render.call_args[0]
@@ -541,7 +546,7 @@ class TestIntegration:
         render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
-            mock_render.return_value = "base64imagedata"
+            mock_render.return_value = "AAAA"
 
             # Test multiple views
             for view_name in ["front", "top", "isometric"]:
@@ -550,54 +555,55 @@ class TestIntegration:
                     view=view_name,
                     image_size=[800, 600],
                     variables={"radius": 10},
-                    output_format="base64"
                 )
                 
-                assert result["success"] is True
-                assert "data" in result
-                assert result["mime_type"] == "image/png"
+                # Result is now a list: [MCPImage(...), '{"success": true, ...}']
+                assert isinstance(result, list)
+                assert len(result) == 2
+                assert isinstance(result[0], MCPImage)
+                metadata = json.loads(result[-1])
+                assert metadata["success"] is True
     
     @pytest.mark.asyncio
-    async def test_render_with_output_format_auto(self):
-        """Test automatic output format selection based on size."""
+    async def test_render_single_returns_list_with_image(self):
+        """Test that render_single returns a list with MCPImage and metadata."""
         from openscad_mcp.server import render_single
         render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
 
-        # Small response
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
-            mock_render.return_value = "A" * 100  # Small image
+            mock_render.return_value = "AAAA"
+
+            result = await render_fn(scad_content="cube(5);")
+
+            # Result is a list: [MCPImage(...), '{"success": true, ...}']
+            assert isinstance(result, list)
+            assert len(result) == 2
+            assert isinstance(result[0], MCPImage)
+            metadata = json.loads(result[-1])
+            assert metadata["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_render_single_error_returns_list(self):
+        """Test that render_single error returns a list with JSON error metadata."""
+        from openscad_mcp.server import render_single
+        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+
+        with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
+            mock_render.side_effect = RuntimeError("OpenSCAD crashed")
 
             result = await render_fn(
-                scad_content="cube(5);",
-                output_format="auto"
+                scad_content="complex_model();",
+                view="isometric"
             )
-            
-            assert result["success"] is True
-            assert "data" in result  # Should use base64 for small images
-    
-    @pytest.mark.asyncio
-    async def test_render_with_large_response(self):
-        """Test handling of large responses with auto mode."""
-        from openscad_mcp.server import render_single
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
 
-        with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
-            # Return very large image data
-            mock_render.return_value = "A" * 50000
-            
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with patch('openscad_mcp.server.Path') as mock_path:
-                    mock_path.return_value = Path(tmpdir)
-                    
-                    result = await render_fn(
-                        scad_content="complex_model();",
-                        view="isometric",
-                        output_format="auto"
-                    )
-                    
-                    assert result["success"] is True
-                    # Should have handled the large response
-                    assert "operation_id" in result
+            # Error result is a list with a single JSON string
+            assert isinstance(result, list)
+            assert len(result) == 1
+            metadata = json.loads(result[0])
+            assert metadata["success"] is False
+            assert "OpenSCAD crashed" in metadata["error"]
+            assert "operation_id" in metadata
+
     
     def test_backward_compatibility(self):
         """Test that existing code using old API still works."""
