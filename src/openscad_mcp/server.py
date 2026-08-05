@@ -955,7 +955,7 @@ async def render_single(
         variables: Variables to pass to OpenSCAD
         auto_center: Auto-center the model
         quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD defaults), or "high" (slow, high detail). User-provided variables override quality preset values.
-        include_paths: Additional include paths for OpenSCAD via -I flags, enabling multi-file project support
+        include_paths: Additional include paths for OpenSCAD via the OPENSCADPATH environment variable, enabling multi-file project support
         ctx: MCP context for logging
 
     Returns:
@@ -1086,8 +1086,9 @@ async def render_perspectives(
         quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD
             defaults), or "high" (slow, high detail). User-provided variables
             override quality preset values.
-        include_paths: Additional include paths for OpenSCAD via -I flags,
-            enabling multi-file project support
+        include_paths: Additional include paths for OpenSCAD via the
+            OPENSCADPATH environment variable, enabling multi-file
+            project support
         ctx: MCP context for logging
 
     Returns:
@@ -1302,7 +1303,8 @@ async def export_model(
         output_path: Path to write the exported file. If not specified, a temp
             directory is used.
         variables: Variables to pass to OpenSCAD via -D flags
-        include_paths: Additional include paths for OpenSCAD via -I flags
+        include_paths: Additional include paths for OpenSCAD via the
+            OPENSCADPATH environment variable
         ctx: MCP context for logging
 
     Returns:
@@ -1973,8 +1975,8 @@ async def validate_scad(
         scad_file: Path to OpenSCAD file to validate (mutually
             exclusive with scad_content)
         variables: Variables to pass to OpenSCAD via -D flags
-        include_paths: Additional include paths for OpenSCAD via
-            -I flags
+        include_paths: Additional include paths for OpenSCAD via the
+            OPENSCADPATH environment variable
         ctx: MCP context for logging
 
     Returns:
@@ -2168,8 +2170,8 @@ async def analyze_model(
         scad_file: Path to OpenSCAD file to analyze (mutually
             exclusive with scad_content)
         variables: Variables to pass to OpenSCAD via -D flags
-        include_paths: Additional include paths for OpenSCAD via
-            -I flags
+        include_paths: Additional include paths for OpenSCAD via the
+            OPENSCADPATH environment variable
         ctx: MCP context for logging
 
     Returns:

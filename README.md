@@ -161,8 +161,7 @@ Once connected, ask your AI assistant:
 | `color_scheme` | string | `Cornfield` | OpenSCAD color scheme |
 | `variables` | dict | `{}` | OpenSCAD `-D` variables |
 | `quality` | string | — | `draft`, `normal`, or `high` |
-| `include_paths` | list | — | Extra `-I` include directories |
-| `output_format` | string | `auto` | `auto`, `base64`, `file_path`, or `compressed` |
+| `include_paths` | list | — | Extra include directories (via `OPENSCADPATH`) |
 
 *Exactly one of `scad_content` or `scad_file` must be provided.
 
