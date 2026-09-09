@@ -1,0 +1,52 @@
+{
+  "id": "peg_and_hole",
+  "prompt": "Design a peg and a matching hole block in OpenSCAD, shown in the assembled position. The block is 30 x 30 x 10 mm, centred on the origin in X and Y and rising from Z = 0, with an 8.4 mm hole straight through its centre. The peg is an 8.0 mm diameter, 20 mm tall cylinder standing on the origin, coaxial with the hole, so it passes through the block without touching it. Put them in modules named hole_block() and peg(), name the hole diameter hole_d and the peg diameter peg_d, and call both modules at the top level.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        30,
+        30,
+        20
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 9450.4,
+      "tol_pct": 2
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 2
+    },
+    {
+      "type": "interference",
+      "parts": [
+        "peg();",
+        "hole_block();"
+      ],
+      "max_overlap_mm3": 0.0
+    },
+    {
+      "type": "predicate",
+      "scad": "hole_d",
+      "expected": 8.4,
+      "tol_mm": 0.05
+    },
+    {
+      "type": "predicate",
+      "scad": "peg_d",
+      "expected": 8.0,
+      "tol_mm": 0.05
+    }
+  ],
+  "tags": [
+    "assembly",
+    "fit"
+  ]
+}

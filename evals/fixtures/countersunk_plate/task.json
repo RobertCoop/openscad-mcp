@@ -1,0 +1,37 @@
+{
+  "id": "countersunk_plate",
+  "prompt": "Design a mounting plate with countersunk holes in OpenSCAD. The plate is 60 x 40 x 6 mm with a corner at the origin. Put four holes for M4 flat head screws at X = 12 and X = 48, Y = 10 and Y = 30. Each hole is 4.3 mm through, with a 90 degree countersink opening out to 8.6 mm diameter exactly at the top face. Store the head diameter in a variable named head_d and use $fn = 64.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        60,
+        40,
+        6
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 13885.8,
+      "tol_pct": 3
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "predicate",
+      "scad": "head_d",
+      "expected": 8.6,
+      "tol_mm": 0.05
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

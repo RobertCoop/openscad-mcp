@@ -87,8 +87,12 @@ include = [
     "src/**/*.yml",
     "src/**/*.json",
     "README.md",
+    "AGENTS.md",
     "LICENSE",
     "pyproject.toml",
+    "skills/**",
+    ".claude-plugin/**",
+    "mcp-config.json",
 ]
 exclude = [
     "tests/",

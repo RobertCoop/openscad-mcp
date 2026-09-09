@@ -1,0 +1,31 @@
+{
+  "id": "handle_hull",
+  "prompt": "Design a drawer pull in OpenSCAD using hull(). Two 10 mm diameter posts stand 18 mm tall, one on the origin and one at X = 60. The grip is the hull of two 14 mm diameter spheres centred on the post axes at Z = 18, so it reads as a rounded bar spanning the posts. Union the grip and the posts into one solid and use $fn = 48 for the spheres.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        74,
+        14,
+        25
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 12478.6,
+      "tol_pct": 8
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

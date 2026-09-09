@@ -51,11 +51,10 @@ from openscad_mcp.utils.config import (
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
-render_single_fn = server.render_single.fn
-render_perspectives_fn = server.render_perspectives.fn
+render_fn = server.render.fn
 export_model_fn = server.export_model.fn
-validate_scad_fn = server.validate_scad.fn
-analyze_model_fn = server.analyze_model.fn
+validate_fn = server.validate.fn
+measure_fn = server.measure.fn
 check_openscad_fn = server.check_openscad.fn
 clear_cache_fn = server.clear_cache.fn
 get_server_info_fn = server.get_server_info.fn
@@ -286,7 +285,7 @@ class TestRenderDiagnostics:
         assert result.diagnostics.ok is False
         assert "Assertion" in result.diagnostics.errors[0]
 
-    async def test_render_single_reports_success_false_with_image(self, env):
+    async def test_render_reports_success_false_with_image(self, env):
         stderr = "ERROR: Assertion 'false' failed in file input.scad, line 1\n"
 
         def run(cmd, **kw):
@@ -294,7 +293,7 @@ class TestRenderDiagnostics:
             return _result(0, stderr)
 
         with patch("subprocess.run", side_effect=run):
-            items = await render_single_fn(scad_content="assert(false); cube(1);")
+            items = await render_fn(scad_content="assert(false); cube(1);")
 
         assert any(not isinstance(x, str) for x in items), "image must still be returned"
         meta = _meta(items)
@@ -304,13 +303,13 @@ class TestRenderDiagnostics:
         assert meta["image_tokens"] == image_token_estimate(800, 600)
         assert meta["cached"] is False
 
-    async def test_render_single_warnings_do_not_flip_success(self, env):
+    async def test_render_warnings_do_not_flip_success(self, env):
         def run(cmd, **kw):
             _write_outputs(cmd)
             return _result(0, "WARNING: Ignoring unknown module 'x' in file input.scad, line 1\n")
 
         with patch("subprocess.run", side_effect=run):
-            meta = _meta(await render_single_fn(scad_content="x(); cube(1);"))
+            meta = _meta(await render_fn(scad_content="x(); cube(1);"))
         assert meta["success"] is True
         assert meta["warnings"]
 
@@ -323,11 +322,17 @@ class TestRenderDiagnostics:
             return _result()
 
         with patch("subprocess.run", side_effect=run):
-            await render_single_fn(scad_content="cube([2,3,1]);")
+            await render_fn(scad_content="cube([2,3,1]);")
         assert "--autocenter" in captured["cmd"]
         assert "--viewall" in captured["cmd"]
 
     async def test_explicit_camera_is_respected(self, env):
+        """An explicit eye point reaches OpenSCAD as the viewing direction.
+
+        Ungrounded renders always auto-fit, so --viewall still adjusts the
+        distance along that direction; use grounded=true for an absolute
+        scale.
+        """
         captured = {}
 
         def run(cmd, **kw):
@@ -336,10 +341,10 @@ class TestRenderDiagnostics:
             return _result()
 
         with patch("subprocess.run", side_effect=run):
-            await render_single_fn(scad_content="cube(1);", camera_position=[10, 10, 10])
-        assert "--autocenter" not in captured["cmd"]
+            await render_fn(scad_content="cube(1);", camera_position=[10, 10, 10])
         camera = [a for a in captured["cmd"] if a.startswith("--camera=")][0]
         assert camera.split("=")[1].split(",")[:3] == ["10.0", "10.0", "10.0"]
+        assert "--viewall" in captured["cmd"]
 
     def test_image_size_clamped_before_cache_key(self, env):
         def run(cmd, **kw):
@@ -353,21 +358,27 @@ class TestRenderDiagnostics:
         assert a.cache_key == b.cache_key
         assert b.cached is True
 
-    async def test_perspectives_default_three_views_and_token_total(self, env):
+    async def test_default_is_one_view_and_token_total_scales(self, env):
+        """One image by default; asking for three costs three times the tokens."""
+
         def run(cmd, **kw):
             _write_outputs(cmd)
             return _result()
 
         with patch("subprocess.run", side_effect=run):
-            meta = _meta(await render_perspectives_fn(scad_content="cube(1);"))
-        assert meta["views"] == ["front", "top", "isometric"]
-        assert meta["image_tokens"] == 3 * image_token_estimate(800, 600)
+            meta = _meta(await render_fn(scad_content="cube(1);"))
+            three = _meta(
+                await render_fn(scad_content="cube(1);", views=["front", "top", "isometric"])
+            )
+        assert meta["views"] == ["isometric"]
+        assert meta["image_tokens"] == image_token_estimate(800, 600)
+        assert three["views"] == ["front", "top", "isometric"]
+        assert three["image_tokens"] == 3 * image_token_estimate(800, 600)
 
-    def test_image_tools_have_no_output_schema(self):
-        """A return annotation on these would re-enable structured output and
+    def test_image_tool_has_no_output_schema(self):
+        """A return annotation here would re-enable structured output and
         break ImageContent delivery; keep it explicit."""
-        for tool in (server.render_single, server.render_perspectives, server.compare_renders):
-            assert tool.output_schema is None
+        assert server.render.output_schema is None
 
 
 # ---------------------------------------------------------------------------
@@ -524,12 +535,12 @@ class TestSecurityClosure:
             return _result(0, "ECHO: [8, 6, 3]\n")
 
         with patch("subprocess.run", side_effect=run):
-            result = await validate_scad_fn(scad_content=f"n=[ include <{secret}> ]; echo(n);")
+            result = await validate_fn(scad_content=f"n=[ include <{secret}> ]; echo(n);")
         assert result["success"] is False
         assert "outside allowed" in result["error"]
         assert "echo_output" not in result
 
-    async def test_analyze_withholds_geometry_for_outside_read(self, env):
+    async def test_measure_withholds_geometry_for_outside_read(self, env):
         secret = env / "secret.dat"
         secret.write_text("11 22\n33 44\n")
 
@@ -538,9 +549,9 @@ class TestSecurityClosure:
             return _result(0, "   Simple: yes\n")
 
         with patch("subprocess.run", side_effect=run):
-            result = await analyze_model_fn(scad_content=f'surface(file="{secret}");')
+            result = await measure_fn(scad_content=f'surface(file="{secret}");')
         assert result["success"] is False
-        assert "bounding_box" not in result
+        assert "bbox_min" not in result
 
     async def test_export_withholds_and_deletes_file_for_outside_read(self, env):
         secret = env / "secret.dat"
@@ -573,7 +584,7 @@ class TestSecurityClosure:
             result = render_scad_to_png(scad_content="include <BOSL2/std.scad>\ncube(1);")
         assert result.dependencies == [str(std)]
 
-    @pytest.mark.parametrize("tool", [validate_scad_fn, analyze_model_fn, export_model_fn])
+    @pytest.mark.parametrize("tool", [validate_fn, measure_fn, export_model_fn])
     async def test_include_paths_validated_in_every_tool(self, env, tool):
         outside = env / "elsewhere"
         outside.mkdir()
@@ -702,7 +713,7 @@ class TestMeshHealthAndFormats:
         assert result["success"] is False
         run.assert_not_called()
 
-    async def test_analyze_returns_mesh_health_and_warnings(self, env):
+    async def test_measure_returns_mesh_health_and_warnings(self, env):
         stl = (
             "solid a\nfacet normal 0 0 1\nouter loop\n"
             "vertex 0 0 0\nvertex 2 0 0\nvertex 0 3 1\nendloop\nendfacet\nendsolid a\n"
@@ -715,9 +726,9 @@ class TestMeshHealthAndFormats:
             )
 
         with patch("subprocess.run", side_effect=run):
-            result = await analyze_model_fn(scad_content="cube([2,3,1]);")
+            result = await measure_fn(scad_content="cube([2,3,1]);")
         assert result["success"] is True
-        assert result["dimensions"] == {"width": 2.0, "height": 3.0, "depth": 1.0}
+        assert result["dimensions"] == [2.0, 3.0, 1.0]
         assert result["mesh_health"]["manifold"] is True
         assert result["warnings"] == ["WARNING: hmm in file <inline>, line 1"]
 
@@ -734,7 +745,7 @@ class TestMeshHealthAndFormats:
             )
 
         with patch("subprocess.run", side_effect=run):
-            result = await validate_scad_fn(scad_content="include <nope.scad>\ncube(1);\nfoo(;\n")
+            result = await validate_fn(scad_content="include <nope.scad>\ncube(1);\nfoo(;\n")
         assert result["valid"] is False
         assert result["records"][1]["line"] == 3
         assert result["records"][1]["file"] == "<inline>"
@@ -833,8 +844,8 @@ class TestConcurrencyPrimitive:
 class TestToolSurfaceBudget:
     """The tool schema is paid on every request. Keep it bounded."""
 
-    BUDGET_CHARS = 22_000
-    PER_TOOL_CHARS = 3_500
+    BUDGET_CHARS = 20_000
+    PER_TOOL_CHARS = 3_600
 
     async def test_total_schema_within_budget(self):
         tools = await server.mcp.get_tools()

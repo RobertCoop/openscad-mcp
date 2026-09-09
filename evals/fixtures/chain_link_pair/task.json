@@ -1,0 +1,40 @@
+{
+  "id": "chain_link_pair",
+  "prompt": "Design two interlocked chain links in OpenSCAD for print-in-place, so they are linked but nowhere touching. Each link is a torus of 10 mm major radius and 2.5 mm minor radius, made with rotate_extrude at $fn = 64 over a circle at $fn = 32. Put the first link flat in the XY plane centred on the origin. Put the second link in the XZ plane, centred at X = 10, so it threads through the hole of the first. Put them in modules named link_a() and link_b() and call both at the top level.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        35,
+        25,
+        25
+      ],
+      "tol_mm": 0.3
+    },
+    {
+      "type": "volume",
+      "expected": 2447.6,
+      "tol_pct": 5
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 2
+    },
+    {
+      "type": "interference",
+      "parts": [
+        "link_a();",
+        "link_b();"
+      ],
+      "max_overlap_mm3": 0.0
+    }
+  ],
+  "tags": [
+    "assembly",
+    "fit"
+  ]
+}

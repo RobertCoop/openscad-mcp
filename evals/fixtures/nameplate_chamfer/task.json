@@ -1,0 +1,37 @@
+{
+  "id": "nameplate_chamfer",
+  "prompt": "Design a blank nameplate in OpenSCAD: an 80 x 30 mm plate, 4 mm thick, with a 1.5 mm chamfer running around the top face so the top is 77 x 27 mm and the bottom stays 80 x 30 mm. Do not add any text or lettering. Put a corner at the origin and store the chamfer size in a variable named chamfer.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        80,
+        30,
+        4
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 9357.0,
+      "tol_pct": 3
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "predicate",
+      "scad": "chamfer",
+      "expected": 1.5,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

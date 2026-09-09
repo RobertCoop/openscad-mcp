@@ -1,0 +1,41 @@
+{
+  "id": "hinge_two_leaves",
+  "prompt": "Design a two-leaf hinge in OpenSCAD, drawn in its assembled position. The hinge axis runs along X through the origin and the hinge is 36 mm wide. There are three knuckles of 4 mm radius on that axis: leaf A owns X = 0 to 12 and X = 24 to 36, leaf B owns the middle one, shortened by a 0.3 mm gap at each end so the knuckles never touch. A 4.2 mm pin bore runs through all of them. Each leaf carries a flat plate 3 mm thick, 20 mm deep, 36 mm wide, centred on the axis height: leaf A's plate extends in -Y and leaf B's in +Y, joined to their own knuckles by webs that clear the other leaf entirely. Put the parts in modules named leaf_a() and leaf_b(), name the bore diameter bore_d, and call both modules at the top level.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        36,
+        52,
+        8
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 2
+    },
+    {
+      "type": "interference",
+      "parts": [
+        "leaf_a();",
+        "leaf_b();"
+      ],
+      "max_overlap_mm3": 0.0
+    },
+    {
+      "type": "predicate",
+      "scad": "bore_d",
+      "expected": 4.2,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "assembly",
+    "fit"
+  ]
+}

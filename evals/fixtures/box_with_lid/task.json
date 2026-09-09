@@ -1,0 +1,42 @@
+{
+  "id": "box_with_lid",
+  "prompt": "Design a two-part box and lid in OpenSCAD. The box is 60 x 40 x 25 mm outside with 2 mm walls and a 2 mm floor, open at the top. The lid is a 60 x 40 x 3 mm plate with a 4 mm tall lip on its underside that drops into the box opening with 0.2 mm of clearance on every side. Put the geometry in modules named box() and lid(), store the clearance in a variable named clearance, and lay the two parts out flat for printing: the box with its corner at the origin and the lid translated 70 mm in +X, lip pointing up.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        130,
+        40,
+        25
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 28749.4,
+      "tol_pct": 3
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 2
+    },
+    {
+      "type": "cavity_count",
+      "expected": 0
+    },
+    {
+      "type": "predicate",
+      "scad": "clearance",
+      "expected": 0.2,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "assembly",
+    "fit"
+  ]
+}

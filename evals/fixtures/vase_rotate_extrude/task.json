@@ -1,0 +1,35 @@
+{
+  "id": "vase_rotate_extrude",
+  "prompt": "Design a vase in OpenSCAD using rotate_extrude on a polygon profile. It is 50 mm tall, 44 mm in outside diameter at the base, tapering to 36 mm outside diameter at the rim, with a 2 mm wall and a 3 mm thick floor. The top is open. Use $fn = 96 for the revolution and keep the profile a single closed polygon that touches the axis at X = 0.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        44,
+        44,
+        50
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 16087.4,
+      "tol_pct": 10
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "cavity_count",
+      "expected": 0
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

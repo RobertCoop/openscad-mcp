@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Breaking
+- `render_single`, `render_perspectives` and `compare_renders` are replaced by
+  one `render` tool with `mode=views|section|parts|compare`. `validate_scad`
+  is now `validate` (`mode=syntax`); `analyze_model` is now `measure`
+  (`mode=model`, with a richer result: volume, surface area, solid and
+  cavity counts, watertightness, open/non-manifold edge counts). The tool
+  count is unchanged at 15 and the schema is smaller.
+
+### Added (Phase 1-2: numbers, framing, seeing inside)
+- `measure`: exact geometry from the exported mesh via a stdlib analyzer
+  (`mesh.py`); `mode=parts` measures each part of an assembly with the
+  assembly bbox and bbox-overlap hints; `mode=section` returns the cut
+  contours with area and perimeter; `mode=mass` converts volume to grams;
+  `mesh=` analyses an existing STL or SVG; 2D models are measured from SVG.
+- `render`: a spatial digest before every image (view direction, camera,
+  scale, bbox); `grounded=true` measures the model and renders
+  orthographically with an exact mm/px scale; `annotate=true` draws a scale
+  bar, axis triad and bbox dimensions with Pillow; `mode=section` draws the
+  exact cut with a scale bar; `mode=parts` colours parts with a stable
+  palette and can ghost all but one.
+- `validate`: `mode=geometry` (mesh findings), `mode=predicates` (boolean
+  expressions evaluated in the model's own scope), `mode=includes`
+  (every include/use/import resolved or not).
+- `scad_eval`: typed evaluation of OpenSCAD expressions (numbers, vectors,
+  strings, bools, ranges, undef) in a model's scope.
+- `reference`: sourced engineering data (fits, fasteners, heat-set inserts,
+  bearings, magnets, joints, FDM design rules, materials, OpenSCAD
+  cheatsheet, conventions) with confidence labels; also published as MCP
+  resources `openscad://reference/{topic}`, `openscad://conventions`,
+  `openscad://cheatsheet`, and the conventions brief is sent as server
+  `instructions`.
+- `skills/openscad-design/SKILL.md`, a Claude Code plugin manifest under
+  `.claude-plugin/`, and `AGENTS.md`.
+- `evals/`: fixtures, deterministic scorers and a runner for A/B
+  comparison of agent outputs (see `evals/README.md`).
 - Structured diagnostics on every tool response: `errors`, `warnings`,
   `deprecated`, `echo_output`, and `hints` (repair advice keyed to the
   message OpenSCAD printed), with file/line locations and TRACE call stacks

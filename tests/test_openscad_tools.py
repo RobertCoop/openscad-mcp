@@ -1,7 +1,7 @@
 """
 Tests for MCP tools that invoke OpenSCAD as a subprocess.
 
-Covers: check_openscad, export_model, validate_scad, analyze_model, get_libraries.
+Covers: check_openscad, export_model, validate, measure, get_libraries.
 """
 
 import os
@@ -14,8 +14,8 @@ from unittest.mock import patch, Mock, AsyncMock, MagicMock
 from openscad_mcp.server import (
     check_openscad,
     export_model,
-    validate_scad,
-    analyze_model,
+    validate,
+    measure,
     get_libraries,
     SUPPORTED_EXPORT_FORMATS,
 )
@@ -28,8 +28,8 @@ from openscad_mcp.utils.config import Config, CacheConfig, SecurityConfig, set_c
 
 check_openscad_fn = check_openscad.fn if hasattr(check_openscad, "fn") else check_openscad
 export_model_fn = export_model.fn if hasattr(export_model, "fn") else export_model
-validate_scad_fn = validate_scad.fn if hasattr(validate_scad, "fn") else validate_scad
-analyze_model_fn = analyze_model.fn if hasattr(analyze_model, "fn") else analyze_model
+validate_fn = validate.fn if hasattr(validate, "fn") else validate
+measure_fn = measure.fn if hasattr(measure, "fn") else measure
 get_libraries_fn = get_libraries.fn if hasattr(get_libraries, "fn") else get_libraries
 
 
@@ -312,18 +312,18 @@ class TestExportModel:
 
 
 # ============================================================================
-# TestValidateScad
+# TestValidateSyntax
 # ============================================================================
 
 
-class TestValidateScad:
-    """Tests for the validate_scad MCP tool."""
+class TestValidateSyntax:
+    """Tests for the validate MCP tool in its default mode="syntax"."""
 
     async def test_valid_code(self, configured_env, mock_subprocess_success):
         """Valid SCAD code should return valid=True with no errors."""
         mock_run = mock_subprocess_success()
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await validate_scad_fn(scad_content="cube(10);")
+            result = await validate_fn(scad_content="cube(10);")
 
         assert result["success"] is True
         assert result["valid"] is True
@@ -349,7 +349,7 @@ class TestValidateScad:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            await validate_scad_fn(scad_content="square([10,10]);")
+            await validate_fn(scad_content="square([10,10]);")
 
         fmt = [a for a in captured if a.startswith("--export-format=")]
         assert fmt, "an explicit export format is required with -o /dev/null"
@@ -376,7 +376,7 @@ class TestValidateScad:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await validate_scad_fn(scad_content="cube(10);")
+            result = await validate_fn(scad_content="cube(10);")
 
         assert result["valid"] is False
         assert len(result["errors"]) >= 1, "an unexplained failure must not be silent"
@@ -392,7 +392,7 @@ class TestValidateScad:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await validate_scad_fn(scad_content="cube(")
+            result = await validate_fn(scad_content="cube(")
 
         assert result["success"] is True
         assert result["valid"] is False
@@ -411,7 +411,7 @@ class TestValidateScad:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await validate_scad_fn(scad_content="echo(\"hello\");")
+            result = await validate_fn(scad_content="echo(\"hello\");")
 
         assert result["success"] is True
         assert result["valid"] is True
@@ -429,7 +429,7 @@ class TestValidateScad:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await validate_scad_fn(scad_content="cube(10);")
+            result = await validate_fn(scad_content="cube(10);")
 
         assert result["success"] is True
         assert len(result["deprecated"]) >= 1
@@ -437,7 +437,7 @@ class TestValidateScad:
 
     async def test_both_inputs_error(self, configured_env):
         """Providing both scad_content and scad_file should return an error."""
-        result = await validate_scad_fn(
+        result = await validate_fn(
             scad_content="cube(10);", scad_file="/some/file.scad"
         )
 
@@ -446,14 +446,14 @@ class TestValidateScad:
 
     async def test_no_inputs_error(self, configured_env):
         """Providing neither scad_content nor scad_file should return an error."""
-        result = await validate_scad_fn()
+        result = await validate_fn()
 
         assert result["success"] is False
         assert "exactly one" in result["error"].lower() or "Exactly one" in result["error"]
 
     async def test_file_not_found(self, configured_env):
         """A nonexistent scad_file should return a file-not-found error."""
-        result = await validate_scad_fn(scad_file="/nonexistent/model.scad")
+        result = await validate_fn(scad_file="/nonexistent/model.scad")
 
         assert result["success"] is False
         assert "not found" in result["error"].lower() or "not within" in result["error"].lower()
@@ -467,7 +467,7 @@ class TestValidateScad:
             "openscad_mcp.server.subprocess.run",
             side_effect=mock_run_timeout,
         ):
-            result = await validate_scad_fn(scad_content="cube(10);")
+            result = await validate_fn(scad_content="cube(10);")
 
         assert result["success"] is False
         assert "timed out" in result["error"].lower() or "timeout" in result["error"].lower()
@@ -478,7 +478,7 @@ class TestValidateScad:
         cfg.security.allowed_paths = ["/allowed"]
         set_config(cfg)
 
-        result = await validate_scad_fn(scad_file="/forbidden/model.scad")
+        result = await validate_fn(scad_file="/forbidden/model.scad")
 
         assert result["success"] is False
         assert "allowed paths" in result["error"].lower() or "not within" in result["error"].lower()
@@ -499,7 +499,7 @@ class TestValidateScad:
             "openscad_mcp.server.subprocess.run",
             side_effect=capturing_mock,
         ):
-            await validate_scad_fn(scad_content="cube(10);")
+            await validate_fn(scad_content="cube(10);")
 
         assert len(captured_cmds) == 1
         cmd = captured_cmds[0]
@@ -512,7 +512,7 @@ class TestValidateScad:
         """The validate command must not pass --hardwarnings.
 
         With the flag, OpenSCAD 2021.01 stops evaluating at the first
-        WARNING but still exits 0, so validate_scad reported valid=true with
+        WARNING but still exits 0, so validate reported valid=true with
         a silently truncated echo_output.
         """
         captured_cmds = []
@@ -529,7 +529,7 @@ class TestValidateScad:
             "openscad_mcp.server.subprocess.run",
             side_effect=capturing_mock,
         ):
-            await validate_scad_fn(scad_content="cube(10);")
+            await validate_fn(scad_content="cube(10);")
 
         assert len(captured_cmds) == 1
         assert "--hardwarnings" not in captured_cmds[0]
@@ -537,12 +537,12 @@ class TestValidateScad:
 
 
 # ============================================================================
-# TestAnalyzeModel
+# TestMeasureModel
 # ============================================================================
 
 
-class TestAnalyzeModel:
-    """Tests for the analyze_model MCP tool."""
+class TestMeasureModel:
+    """Tests for the measure MCP tool in its default mode="model"."""
 
     async def test_ascii_stl_analysis(
         self, configured_env, mock_subprocess_success
@@ -550,11 +550,13 @@ class TestAnalyzeModel:
         """Analysis of an ASCII STL should return bounding box, dimensions, and triangle count."""
         mock_run = mock_subprocess_success()
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="cube(10);")
+            result = await measure_fn(scad_content="cube(10);")
 
         assert result["success"] is True
-        assert "bounding_box" in result
-        assert "dimensions" in result
+        assert result["mode"] == "model"
+        assert "bbox_min" in result
+        assert "bbox_max" in result
+        assert len(result["dimensions"]) == 3
         assert "triangle_count" in result
         assert result["triangle_count"] >= 1
 
@@ -575,30 +577,29 @@ class TestAnalyzeModel:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="cube(10);")
+            result = await measure_fn(scad_content="cube(10);")
 
         assert result["success"] is True
         assert result["triangle_count"] == 1
         # Vertices are (0,0,0), (10,0,0), (10,10,5)
-        assert result["bounding_box"]["min"] == [0.0, 0.0, 0.0]
-        assert result["bounding_box"]["max"] == [10.0, 10.0, 5.0]
+        assert result["bbox_min"] == [0.0, 0.0, 0.0]
+        assert result["bbox_max"] == [10.0, 10.0, 5.0]
 
     async def test_empty_model(self, configured_env):
-        """An STL with no vertices should return an error about an empty model."""
+        """A model that exports no geometry should return an error saying so.
+
+        OpenSCAD writes no export file at all and warns about an empty top
+        level object, so there is nothing for the mesh analyser to read.
+        """
         def mock_run(cmd, **kwargs):
-            if "-o" in cmd:
-                idx = cmd.index("-o")
-                out_path = Path(cmd[idx + 1])
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text("solid empty\nendsolid empty\n")
             result = Mock()
             result.returncode = 0
-            result.stderr = ""
+            result.stderr = "WARNING: Current top level object is empty.\n"
             result.stdout = ""
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="// empty model")
+            result = await measure_fn(scad_content="// empty model")
 
         assert result["success"] is False
         assert "empty" in result["error"].lower()
@@ -613,14 +614,14 @@ class TestAnalyzeModel:
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="cube(")
+            result = await measure_fn(scad_content="cube(")
 
         assert result["success"] is False
         assert "failed" in result["error"].lower() or "ERROR" in result["error"]
 
     async def test_both_inputs_error(self, configured_env):
         """Providing both scad_content and scad_file should return an error."""
-        result = await analyze_model_fn(
+        result = await measure_fn(
             scad_content="cube(10);", scad_file="/some/file.scad"
         )
 
@@ -629,7 +630,7 @@ class TestAnalyzeModel:
 
     async def test_file_not_found(self, configured_env):
         """A nonexistent scad_file should return a file-not-found error."""
-        result = await analyze_model_fn(scad_file="/nonexistent/model.scad")
+        result = await measure_fn(scad_file="/nonexistent/model.scad")
 
         assert result["success"] is False
         assert "not found" in result["error"].lower() or "not within" in result["error"].lower()
@@ -642,10 +643,10 @@ class TestAnalyzeModel:
         mock_run = mock_subprocess_success()
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="cube(10);")
+            result = await measure_fn(scad_content="cube(10);")
 
         assert result["success"] is True
-        leftover_stl = list(tmp_path.glob("analyze_*.stl"))
+        leftover_stl = list(tmp_path.glob("*.stl"))
         assert len(leftover_stl) == 0, f"Temp STL files not cleaned up: {leftover_stl}"
 
     async def test_dimensions_correct(
@@ -654,13 +655,11 @@ class TestAnalyzeModel:
         """Dimensions should match the known mock STL vertices (0,0,0)-(10,10,5)."""
         mock_run = mock_subprocess_success()
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
-            result = await analyze_model_fn(scad_content="cube(10);")
+            result = await measure_fn(scad_content="cube(10);")
 
         assert result["success"] is True
-        dims = result["dimensions"]
-        assert dims["width"] == pytest.approx(10.0)
-        assert dims["height"] == pytest.approx(10.0)
-        assert dims["depth"] == pytest.approx(5.0)
+        # dimensions is [width, depth, height] along x, y, z
+        assert result["dimensions"] == pytest.approx([10.0, 10.0, 5.0])
 
 
 # ============================================================================

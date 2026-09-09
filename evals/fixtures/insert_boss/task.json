@@ -1,0 +1,47 @@
+{
+  "id": "insert_boss",
+  "prompt": "Design a base plate with a boss for an M3 heat-set threaded insert in OpenSCAD. The plate is 30 x 30 x 3 mm, centred on the origin in X and Y and rising from Z = 0. A cylindrical boss 8 mm in diameter stands on the plate centre and reaches 13 mm above Z = 0. Bore it 4.0 mm in diameter and 8 mm deep from the top for the insert; the bore must not break through the plate. Store the bore diameter in a variable named insert_hole_d and the bore depth in a variable named insert_depth, and use $fn = 64.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        30,
+        30,
+        13
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 3101.5,
+      "tol_pct": 2
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "cavity_count",
+      "expected": 0
+    },
+    {
+      "type": "predicate",
+      "scad": "insert_hole_d",
+      "expected": 4.0,
+      "tol_mm": 0.01
+    },
+    {
+      "type": "predicate",
+      "scad": "insert_depth",
+      "expected": 8.0,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "bracket_l",
+  "prompt": "Design an L-shaped mounting bracket in OpenSCAD. The horizontal flange is 60 mm in X by 40 mm in Y, the vertical flange is 60 mm in X by 40 mm tall in Z, and both flanges are 5 mm thick, meeting at the origin so the part fills a 60 x 40 x 40 mm envelope in the positive octant with the vertical flange at Y = 0. Drill two 5.5 mm clearance holes through each flange: in the horizontal flange at X = 15 and X = 45, Y = 25; in the vertical flange at X = 15 and X = 45, Z = 25. Store the hole diameter in a variable named hole_d.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        60,
+        40,
+        40
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 22025.6,
+      "tol_pct": 2
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "predicate",
+      "scad": "hole_d",
+      "expected": 5.5,
+      "tol_mm": 0.05
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

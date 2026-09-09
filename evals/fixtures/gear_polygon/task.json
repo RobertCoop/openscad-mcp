@@ -1,0 +1,37 @@
+{
+  "id": "gear_polygon",
+  "prompt": "Design a gear-like disc in OpenSCAD by extruding a polygon profile. It has 12 teeth on a 30 mm root diameter and a 36 mm tip diameter, is 6 mm thick, and has a 6 mm bore through the centre. Build the toothed outline with a polygon() whose points you compute, not by unioning primitives, and phase the teeth so one tooth tip is centred on the +X axis. Each tooth occupies a 30 degree pitch: root until 8 degrees in, a flank out to the tip circle, a tip that spans 6 degrees, then a flank back to the root. Store the tooth count in a variable named teeth.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        35.95,
+        35.95,
+        6
+      ],
+      "tol_mm": 0.3
+    },
+    {
+      "type": "volume",
+      "expected": 4660.5,
+      "tol_pct": 10
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "predicate",
+      "scad": "teeth",
+      "expected": 12,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "gridfinity_bin",
+  "prompt": "Design a Gridfinity-style 1x1 storage bin in OpenSCAD. Gridfinity uses a 42 mm grid, so the bin footprint is a 41.5 mm square with 4 mm radius rounded corners, centred on the origin. It is 40 mm tall, open at the top, with 1.2 mm walls and a 2 mm floor. Skip the baseplate feet and the stacking lip; the plain rounded-corner tub is enough. Use $fn = 48 for the corner rounding and store the grid pitch in a variable named grid_pitch.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        41.5,
+        41.5,
+        40
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 10498.5,
+      "tol_pct": 5
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "cavity_count",
+      "expected": 0
+    },
+    {
+      "type": "predicate",
+      "scad": "grid_pitch",
+      "expected": 42,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

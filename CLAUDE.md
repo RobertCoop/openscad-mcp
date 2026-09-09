@@ -63,17 +63,17 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 ### MCP Tools (registered with `@mcp.tool`)
 
 **Rendering:**
-- `render_single` — render a single view with quality presets and caching
-- `render_perspectives` — multi-view parallel rendering using VIEW_PRESETS
-- `compare_renders` — before/after diff rendering
+- `render` — one tool, `mode=views|section|parts|compare`. Each image is preceded by a spatial digest (camera, view direction, mm/px when `grounded`, bbox) and followed by a metadata JSON with diagnostics. `grounded=true` measures the bbox first (cached in `_measure_cache`) and uses `camera.fit_camera` + `--projection=o`; `annotate=true` draws with `camera.annotate`. Sections and parts are source-level wrappers from `wrappers.py`
 
 **Export & Model Management:**
 - `export_model` — STL/3MF/AMF/OFF/NEF3/DXF/SVG/PDF/CSG export; mesh formats return `mesh_health` from the CGAL statistics banner (`manifold` true/false/null)
 - `create_model`, `get_model`, `update_model`, `list_models`, `delete_model` — CRUD for .scad files
 
 **Analysis & Validation:**
-- `validate_scad` — syntax checking without full render
-- `analyze_model` — bounding box/dimensions via STL vertex parsing
+- `measure` — `mode=model|parts|section|mass`: exact numbers from `mesh.analyze_stl` (volume, area, components, cavities, watertight, open/non-manifold edges) plus `mesh_health`; `mesh=` analyses an existing STL/SVG; 2D models fall back to SVG polygons
+- `validate` — `mode=syntax|geometry|predicates|includes`
+- `scad_eval` — typed expression evaluation in the model's scope via echo read-back (`wrappers.eval_wrapper`, `parse_echo_values`)
+- `reference` — static engineering data from `reference.py` with confidence labels; also exposed as resources and as server `instructions`
 - `get_libraries` — discover installed OpenSCAD libraries
 - `check_openscad` — verify OpenSCAD installation and version
 
@@ -83,6 +83,10 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 
 ### Supporting modules
 
+- **`wrappers.py`** — source-level wrappers: `module __model(){ include <file> ...}` with caller variables injected as trailing assignments (`-D` does not reach a module-scoped include), `!union(){...}` root modifier to suppress the model's own top-level geometry for parts/sections, and the ECHO value parser
+- **`mesh.py`** — stdlib STL/SVG analysis (welding, union-find components, signed volumes, edge census)
+- **`camera.py`** — orthographic camera model (`view_height_mm = 0.397825 * distance`, keyed to image height), `fit_camera`, Pillow annotation, spatial digest, part palette
+- **`reference.py`** — sourced fits/fasteners/inserts/bearings/joints/DFM/materials data, `conventions_brief()` (server instructions), `cheatsheet()`
 - **`diagnostics.py`** — `parse_openscad_output()` turns stderr into `Diagnostics` (records with file/line and folded TRACE call stacks, capped echo output, CGAL statistics, repair hints keyed to real 2021.01 message strings), `parse_deps_file()` for `-d` output, `extract_source_dependencies()` for static include/use/import/surface scanning
 - **`types.py`** — Pydantic v2 models and enums: `ColorScheme`, `TransportType`, `Vector3D`, `ImageSize`, `OpenSCADInfo`, `ServerInfo`
 - **`utils/config.py`** — Configuration via Pydantic models with env var, `.env`, and YAML support. Singleton access via `get_config()`/`set_config()`. Configs: `RenderingConfig`, `CacheConfig`, `SecurityConfig`, `ServerConfig`, `Config`
@@ -116,7 +120,9 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **Exit code is not success**: on 2021.01 a failed `assert()`, an unknown module, a non-closed polyhedron and a missing include all exit 0. Every tool parses stderr and sets `success` from `Diagnostics.ok`; renders return the image *with* the errors.
 - **`--hardwarnings` is off by default** (`rendering.hard_warnings`): it aborts evaluation at the first warning while exiting 0, blanking renders and truncating echo output. Warnings surface through diagnostics instead. Never add it back to echo-bearing paths.
 - **`Volumes:` in the CGAL banner is not a body count**: a hollow shell and two disjoint cubes both report 3. Report it as `nef_volumes`; gate manifoldness on `Simple:` only.
-- **Framing**: `render_single` without a `view` and without an explicit camera auto-frames (`--autocenter --viewall`); `render_perspectives` defaults to 3 views (front, top, isometric) because each image costs ~640 vision tokens.
+- **Framing**: `render` auto-fits (`--autocenter --viewall`) unless `grounded=true`; the default is a single isometric view because each image costs ~640 vision tokens. Auto-fit destroys absolute scale, so the digest says "scale: unknown" unless grounded.
+- **Tool surface budget**: 15 tools, about 17k chars of schema; a feature is a *mode* of an existing tool until it proves it needs to be a tool (tool-selection accuracy degrades past ~30 tools). `tests/test_correctness_fixes.py` enforces the budget.
+- **Wrapped modes cannot use `-D`**: for section/parts/eval the model is included inside a module, so variables are injected as assignments appended to that module body (verified: `-D` is ignored there, appended assignments override silently).
 - **Response size management**: Large renders auto-save to files instead of returning base64 to avoid oversized MCP responses.
 - **Camera format**: 6-value eye+center format (`--camera=eye_x,eye_y,eye_z,center_x,center_y,center_z`), not the 7-value translate+rotate format.
 - **Render caching**: Enabled by default, validated against a per-entry dependency manifest (see Architecture). Cache stored in `~/.cache/openscad-mcp/`. Never cache a render without recording what it read.

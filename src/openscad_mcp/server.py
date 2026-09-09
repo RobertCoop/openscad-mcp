@@ -38,8 +38,28 @@ from .utils.config import get_config, get_render_semaphore
 logger = logging.getLogger(__name__)
 
 
+_FALLBACK_INSTRUCTIONS = (
+    "OpenSCAD design server. Units are millimetres, Z is up, right-handed. "
+    "Workflow: validate(mode=syntax) -> measure(mode=model) -> render(grounded=true) "
+    "with 1-3 views -> iterate by changing a variable and re-measuring -> export_model. "
+    "Trust numbers from measure over pictures; check errors/warnings/hints in every "
+    "response, since OpenSCAD exits 0 on failed asserts and unknown modules. "
+    "reference(topic=fits|fasteners|inserts|joints|dfm) has sourced clearances."
+)
+
+
+def _server_instructions() -> str:
+    """Conventions brief sent to clients as MCP server instructions."""
+    try:
+        from .reference import conventions_brief
+
+        return conventions_brief()
+    except Exception:  # pragma: no cover - reference data optional at import
+        return _FALLBACK_INSTRUCTIONS
+
+
 # Initialize the FastMCP server
-mcp = FastMCP("OpenSCAD MCP Server")
+mcp = FastMCP("OpenSCAD MCP Server", instructions=_server_instructions())
 
 
 # ============================================================================
@@ -827,6 +847,7 @@ def render_scad_to_png(
     variables: Optional[Dict[str, Any]] = None,
     auto_center: bool = False,
     include_paths: Optional[List[str]] = None,
+    projection: Optional[str] = None,
 ) -> RenderResult:
     """
     Render OpenSCAD code or file to PNG.
@@ -871,6 +892,11 @@ def render_scad_to_png(
 
     capabilities = get_openscad_capabilities(openscad_cmd)
     binary_identity = f"{openscad_cmd}|{capabilities.get('version')}"
+    if projection:
+        if projection not in ("o", "p", "ortho", "perspective", "orthogonal"):
+            raise ValueError("projection must be 'o' (orthographic) or 'p' (perspective)")
+        projection = "o" if projection.startswith("o") else "p"
+        binary_identity += f"|projection={projection}"
 
     # --- Cache: check for a validated cached render ---
     cache_key = _compute_render_cache_key(
@@ -963,6 +989,9 @@ def render_scad_to_png(
         if auto_center:
             cmd.append("--autocenter")
             cmd.append("--viewall")
+
+        if projection:
+            cmd.append(f"--projection={projection}")
 
         cmd.extend(_format_variables(variables))
 
@@ -1484,8 +1513,6 @@ VIEW_PRESETS = {
     "dimetric": ([200, 100, 200], [0, 0, 0], [0, 0, 1]),
 }
 
-# Views rendered by render_perspectives when none are requested.
-DEFAULT_PERSPECTIVE_VIEWS = ("front", "top", "isometric")
 
 # Quality presets mapping to OpenSCAD resolution variables
 # OpenSCAD variable names, including its special variables. A leading $
@@ -1503,331 +1530,6 @@ QUALITY_PRESETS = {
     "normal": {},  # OpenSCAD defaults
     "high": {"$fn": 64, "$fa": 2, "$fs": 0.5},
 }
-
-
-@mcp.tool(output_schema=None)
-async def render_single(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    view: Optional[str] = None,
-    camera_position: Union[str, List[float], Dict[str, float], None] = None,
-    camera_target: Union[str, List[float], Dict[str, float], None] = None,
-    camera_up: Union[str, List[float], Dict[str, float], None] = None,
-    image_size: Union[str, List[int], tuple, None] = None,
-    color_scheme: str = "Cornfield",
-    variables: Optional[Dict[str, Any]] = None,
-    auto_center: bool = False,
-    quality: Optional[str] = None,
-    include_paths: Optional[List[str]] = None,
-    ctx: Optional[Context] = None,
-):
-    """
-    Render a single view from OpenSCAD code or file.
-
-    The image is returned together with OpenSCAD's diagnostics. Check the
-    "errors" and "warnings" in the metadata: OpenSCAD exits 0 for a failed
-    assert() or an unknown module and draws a blank scene, so the picture
-    alone does not mean success.
-
-    Args:
-        scad_content: OpenSCAD code to render (mutually exclusive with scad_file)
-        scad_file: Path to OpenSCAD file (mutually exclusive with scad_content)
-        view: Predefined view name ("front", "back", "left", "right", "top", "bottom", "isometric", "dimetric")
-        camera_position: Camera position - accepts [x,y,z] list, JSON string "[x,y,z]", or dict {"x":x,"y":y,"z":z} (default: [70, 70, 70])
-        camera_target: Camera look-at point - accepts [x,y,z] list, JSON string, or dict (default: [0, 0, 0])
-        camera_up: Camera up vector - accepts [x,y,z] list, JSON string, or dict (default: [0, 0, 1])
-        image_size: Image dimensions - accepts [width, height] list, JSON string "[width, height]", "widthxheight", or tuple (default: [800, 600]; clamped to the configured maximum)
-        color_scheme: OpenSCAD color scheme (default: "Cornfield")
-        variables: Variables to pass to OpenSCAD
-        auto_center: Fit the model in frame. Enabled automatically when no view and no explicit camera are given.
-        quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD defaults), or "high" (slow, high detail). User-provided variables override quality preset values.
-        include_paths: Additional include paths for OpenSCAD via the OPENSCADPATH environment variable, enabling multi-file project support
-        ctx: MCP context for logging
-
-    Returns:
-        List containing the rendered PNG image and a JSON metadata block with
-        success, errors, warnings, echo_output, hints, cached and image_tokens
-    """
-    if ctx:
-        await ctx.info("Starting OpenSCAD render...")
-    
-    # Validate input
-    if bool(scad_content) == bool(scad_file):
-        raise ValueError("Exactly one of scad_content or scad_file must be provided")
-
-    # With no view and no explicit camera the fixed default eye at
-    # [70,70,70] leaves small parts as a thumbnail (a 2x3x1 mm cube filled
-    # 0.2% of the frame). Fit the model unless the caller placed the camera.
-    explicit_camera = camera_position is not None or camera_target is not None
-    if not view and not explicit_camera and not auto_center:
-        auto_center = True
-
-    # If view keyword is provided, use preset camera settings
-    if view:
-        if view not in VIEW_PRESETS:
-            raise ValueError(f"Invalid view name '{view}'. Must be one of: {', '.join(VIEW_PRESETS.keys())}")
-        
-        # Get preset camera settings
-        preset_pos, preset_target, preset_up = VIEW_PRESETS[view]
-        
-        # Override camera parameters with preset values
-        camera_position = list(preset_pos)
-        camera_target = list(preset_target)
-        camera_up = list(preset_up)
-        
-        # Auto-center is typically enabled for standard views
-        if not auto_center:
-            auto_center = True
-            
-        if ctx:
-            await ctx.info(f"Using preset view '{view}' with camera position {camera_position}")
-    else:
-        # Parse camera parameters with proper defaults
-        camera_position = parse_camera_param(camera_position, [70, 70, 70])
-        camera_target = parse_camera_param(camera_target, [0, 0, 0])
-        camera_up = parse_camera_param(camera_up, [0, 0, 1])
-    
-    # Parse image size with flexible formats
-    image_size = parse_image_size_param(image_size, [800, 600])
-    
-    # Parse variables with flexible formats
-    variables = parse_dict_param(variables, {})
-
-    # Apply quality preset variables (user-provided variables take precedence)
-    if quality:
-        if quality not in QUALITY_PRESETS:
-            raise ValueError(
-                f"Invalid quality preset '{quality}'. "
-                f"Must be one of: {', '.join(QUALITY_PRESETS.keys())}"
-            )
-        quality_vars = QUALITY_PRESETS[quality]
-        if quality_vars:
-            merged = dict(quality_vars)
-            merged.update(variables)
-            variables = merged
-
-    try:
-        # Run rendering in executor to avoid blocking the event loop
-        async with get_render_semaphore():
-            raw = await asyncio.get_running_loop().run_in_executor(
-                None,
-                render_scad_to_png,
-                scad_content,
-                scad_file,
-                camera_position,
-                camera_target,
-                camera_up,
-                image_size,
-                color_scheme,
-                variables,
-                auto_center,
-                include_paths,
-            )
-        result = _as_render_result(raw)
-        meta = result.metadata()
-        success = not meta.get("errors")
-
-        if ctx:
-            if success:
-                await ctx.info("Rendering completed" + (" (cached)" if result.cached else ""))
-            else:
-                await ctx.warning(
-                    f"Render produced {len(meta['errors'])} error(s); image returned with diagnostics"
-                )
-
-        # Return as MCPImage so FastMCP sends proper ImageContent to clients.
-        # The image is returned even when diagnostics contain errors: the
-        # picture plus the error is the useful signal.
-        image_bytes = base64.b64decode(result.image_b64)
-        meta.update({"success": success, "operation_id": str(uuid.uuid4())})
-        return [
-            MCPImage(data=image_bytes, format="png"),
-            json.dumps(meta),
-        ]
-
-    except Exception as e:
-        if ctx:
-            await ctx.error(f"Rendering failed: {str(e)}")
-        return [
-            json.dumps({
-                "success": False,
-                "error": str(e),
-                "operation_id": str(uuid.uuid4()),
-            })
-        ]
-
-
-@mcp.tool(output_schema=None)
-async def render_perspectives(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    views: Optional[List[str]] = None,
-    image_size: Optional[str] = None,
-    color_scheme: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
-    quality: Optional[str] = None,
-    include_paths: Optional[List[str]] = None,
-    ctx: Optional[Context] = None,
-):
-    """
-    Render multiple standard views of an OpenSCAD model in a single call.
-
-    Renders the model from several predefined camera perspectives in parallel,
-    returning all images at once. Useful for generating a comprehensive visual
-    overview of a 3D model.
-
-    Args:
-        scad_content: OpenSCAD code to render (mutually exclusive with scad_file)
-        scad_file: Path to OpenSCAD file (mutually exclusive with scad_content)
-        views: List of view names to render. Valid names: "front", "back", "left",
-            "right", "top", "bottom", "isometric", "dimetric". Default: "front",
-            "top", "isometric" (each image costs roughly 640 vision tokens at
-            800x600, so ask for more views only when they answer a question).
-        image_size: Image dimensions - accepts "widthxheight", "width,height",
-            "[width, height]", or [width, height] list (default: [800, 600])
-        color_scheme: OpenSCAD color scheme (default: "Cornfield")
-        variables: Variables to pass to OpenSCAD via -D flags
-        quality: Quality preset - "draft" (fast, low detail), "normal" (OpenSCAD
-            defaults), or "high" (slow, high detail). User-provided variables
-            override quality preset values.
-        include_paths: Additional include paths for OpenSCAD via the
-            OPENSCADPATH environment variable, enabling multi-file
-            project support
-        ctx: MCP context for logging
-
-    Returns:
-        List of rendered PNG images and metadata
-    """
-    try:
-        # Validate input
-        if bool(scad_content) == bool(scad_file):
-            raise ValueError(
-                "Exactly one of scad_content or scad_file must be provided"
-            )
-
-        # Determine which views to render. Three views by default: the old
-        # seven-view default cost ~4500 vision tokens per call.
-        default_views = list(DEFAULT_PERSPECTIVE_VIEWS)
-        if views is None:
-            views = default_views
-        else:
-            # Parse views if provided as string
-            views = parse_list_param(views, default_views)
-
-        # Validate view names
-        invalid_views = [v for v in views if v not in VIEW_PRESETS]
-        if invalid_views:
-            raise ValueError(
-                f"Invalid view name(s): {', '.join(invalid_views)}. "
-                f"Must be one of: {', '.join(VIEW_PRESETS.keys())}"
-            )
-
-        # Parse image size
-        parsed_image_size = parse_image_size_param(image_size, [800, 600])
-
-        # Parse variables
-        parsed_variables = parse_dict_param(variables, {})
-
-        # Apply quality preset variables (user-provided variables take precedence)
-        if quality:
-            if quality not in QUALITY_PRESETS:
-                raise ValueError(
-                    f"Invalid quality preset '{quality}'. "
-                    f"Must be one of: {', '.join(QUALITY_PRESETS.keys())}"
-                )
-            quality_vars = QUALITY_PRESETS[quality]
-            if quality_vars:
-                merged = dict(quality_vars)
-                merged.update(parsed_variables)
-                parsed_variables = merged
-
-        # Use provided color scheme or default
-        resolved_color_scheme = color_scheme or "Cornfield"
-
-        if ctx:
-            await ctx.info(
-                f"Rendering {len(views)} perspective(s): {', '.join(views)}"
-            )
-
-        # Define render function for a single view
-        def _render_view(view_name: str) -> Tuple[str, Any]:
-            """Render a single view, returning (view_name, result_or_error)."""
-            preset_pos, preset_target, preset_up = VIEW_PRESETS[view_name]
-            try:
-                rendered = _as_render_result(render_scad_to_png(
-                    scad_content=scad_content,
-                    scad_file=scad_file,
-                    camera_position=list(preset_pos),
-                    camera_target=list(preset_target),
-                    camera_up=list(preset_up),
-                    image_size=parsed_image_size,
-                    color_scheme=resolved_color_scheme,
-                    variables=parsed_variables,
-                    auto_center=True,
-                    include_paths=include_paths,
-                ))
-                return (view_name, {"success": True, "result": rendered})
-            except Exception as e:
-                return (view_name, {"success": False, "error": str(e)})
-
-        # Render all views in parallel, bounded by the configured concurrency
-        loop = asyncio.get_running_loop()
-        semaphore = get_render_semaphore()
-
-        async def _guarded(view_name: str) -> Tuple[str, Any]:
-            async with semaphore:
-                return await loop.run_in_executor(None, _render_view, view_name)
-
-        results = await asyncio.gather(*[_guarded(v) for v in views])
-
-        # Collect successful renders and errors. Diagnostics are identical
-        # across views of the same source, so report them once.
-        response_items: list = []
-        errors = {}
-        success_count = 0
-        diagnostics_meta: Dict[str, Any] = {}
-        for view_name, result in results:
-            if result["success"]:
-                rendered = result["result"]
-                image_bytes = base64.b64decode(rendered.image_b64)
-                response_items.append(f"View: {view_name}")
-                response_items.append(MCPImage(data=image_bytes, format="png"))
-                success_count += 1
-                if not diagnostics_meta:
-                    diagnostics_meta = rendered.metadata()
-            else:
-                errors[view_name] = result["error"]
-
-        if ctx:
-            error_count = len(errors)
-            msg = f"Rendered {success_count}/{len(views)} view(s) successfully"
-            if error_count > 0:
-                msg += f" ({error_count} failed)"
-            await ctx.info(msg)
-
-        # Add metadata summary
-        summary: Dict[str, Any] = {
-            "success": len(errors) == 0 and not diagnostics_meta.get("errors"),
-            "count": success_count,
-            "views": [v for v, r in results if r["success"]],
-            "failed_views": errors if errors else None,
-        }
-        summary.update(diagnostics_meta)
-        if success_count and diagnostics_meta.get("image_tokens"):
-            summary["image_tokens"] = diagnostics_meta["image_tokens"] * success_count
-        response_items.append(json.dumps(summary))
-
-        return response_items
-
-    except Exception as e:
-        if ctx:
-            await ctx.error(f"Render perspectives failed: {str(e)}")
-        return [
-            json.dumps({
-                "success": False,
-                "error": str(e),
-            })
-        ]
 
 
 @mcp.tool
@@ -2566,242 +2268,6 @@ def _parse_stl_vertices(stl_path: Path) -> List[List[float]]:
 
 
 @mcp.tool()
-async def validate_scad(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
-    """
-    Syntax-check and evaluate OpenSCAD code without rendering geometry.
-
-    Runs OpenSCAD with CSG output directed to /dev/null (NUL on Windows)
-    so it only parses and evaluates the code. Much faster than a full
-    render. Returns categorized ECHO, WARNING, ERROR, and DEPRECATED
-    messages with file/line locations and repair hints. "valid" is false
-    whenever an ERROR was reported, regardless of OpenSCAD's exit code.
-
-    Args:
-        scad_content: OpenSCAD code to validate (mutually exclusive
-            with scad_file)
-        scad_file: Path to OpenSCAD file to validate (mutually
-            exclusive with scad_content)
-        variables: Variables to pass to OpenSCAD via -D flags
-        include_paths: Additional include paths for OpenSCAD via the
-            OPENSCADPATH environment variable
-        ctx: MCP context for logging
-
-    Returns:
-        Dict with success status, valid flag, errors, warnings,
-        echo_output, deprecated, hints, and unresolved_includes
-    """
-    try:
-        # Validate exactly one input source
-        if bool(scad_content) == bool(scad_file):
-            raise ValueError(
-                "Exactly one of scad_content or scad_file "
-                "must be provided"
-            )
-
-        # Output to /dev/null (NUL on Windows). csg rather than a mesh
-        # format: validation only needs the script parsed and evaluated,
-        # and asking for a mesh forces full CGAL geometry evaluation
-        # instead -- 19s versus 80ms on a real model here. A mesh format
-        # also fails outright on valid input that produces no 3D solid.
-        null_output = (
-            "NUL" if platform.system() == "Windows"
-            else "/dev/null"
-        )
-
-        if ctx:
-            await ctx.info("Validating OpenSCAD code...")
-
-        async with get_render_semaphore():
-            ev = await asyncio.get_running_loop().run_in_executor(
-                None,
-                _evaluate_scad,
-                scad_content,
-                scad_file,
-                null_output,
-                "csg",
-                variables,
-                include_paths,
-                "validation",
-                "validate",
-            )
-
-        diag = ev.diagnostics
-        is_valid = diag.ok
-
-        if ctx:
-            status = "valid" if is_valid else "invalid"
-            await ctx.info(
-                f"Validation complete: {status} "
-                f"({len(diag.errors)} error(s), "
-                f"{len(diag.warnings)} warning(s))"
-            )
-
-        response: Dict[str, Any] = {"success": True, "valid": is_valid}
-        response.update(diag.to_dict(include_records=True))
-        missing = unresolved_includes(diag)
-        if missing:
-            response["unresolved_includes"] = missing
-        return response
-
-    except Exception as e:
-        if ctx:
-            await ctx.error(f"Validation failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-        }
-
-
-@mcp.tool()
-async def analyze_model(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
-    """
-    Extract geometric information from an OpenSCAD model.
-
-    Exports the model to a temporary STL file, then parses vertex
-    data to compute bounding box, dimensions, center point, and
-    triangle count. Also returns "mesh_health" from OpenSCAD's CGAL
-    statistics ("manifold" true/false/null) and any warnings or errors
-    OpenSCAD reported, which the numbers alone would hide.
-
-    Args:
-        scad_content: OpenSCAD code to analyze (mutually exclusive
-            with scad_file)
-        scad_file: Path to OpenSCAD file to analyze (mutually
-            exclusive with scad_content)
-        variables: Variables to pass to OpenSCAD via -D flags
-        include_paths: Additional include paths for OpenSCAD via the
-            OPENSCADPATH environment variable
-        ctx: MCP context for logging
-
-    Returns:
-        Dict with success status, bounding_box (min/max xyz),
-        dimensions (width/height/depth), center point, triangle_count,
-        mesh_health, warnings, errors, and hints
-    """
-    try:
-        # Validate exactly one input source
-        if bool(scad_content) == bool(scad_file):
-            raise ValueError(
-                "Exactly one of scad_content or scad_file "
-                "must be provided"
-            )
-
-        config = get_config()
-        temp_dir_path = Path(config.temp_dir)
-        temp_dir_path.mkdir(parents=True, exist_ok=True)
-        stl_output = temp_dir_path / f"analyze_{uuid.uuid4().hex[:8]}.stl"
-
-        if ctx:
-            await ctx.info("Analyzing model geometry...")
-
-        try:
-            async with get_render_semaphore():
-                ev = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    _evaluate_scad,
-                    scad_content,
-                    scad_file,
-                    str(stl_output),
-                    None,
-                    variables,
-                    include_paths,
-                    "export",
-                    "analyze",
-                )
-
-            diag = ev.diagnostics
-            if ev.returncode != 0 or ev.output_path is None:
-                detail = "; ".join(diag.errors) if diag.errors else (
-                    "OpenSCAD did not produce STL output file"
-                )
-                response: Dict[str, Any] = {
-                    "success": False,
-                    "error": f"OpenSCAD export failed: {detail}",
-                }
-                response.update(diag.to_dict(include_records=False))
-                if diag.empty_output:
-                    response["empty_output"] = True
-                return response
-
-            vertices = _parse_stl_vertices(ev.output_path)
-        finally:
-            # Always clean up temp STL
-            if stl_output.exists():
-                stl_output.unlink()
-
-        if not vertices:
-            raise ValueError(
-                "No vertices found in exported STL. "
-                "The model may be empty."
-            )
-
-        # Calculate bounding box
-        xs = [v[0] for v in vertices]
-        ys = [v[1] for v in vertices]
-        zs = [v[2] for v in vertices]
-
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        min_z, max_z = min(zs), max(zs)
-
-        width = max_x - min_x
-        height = max_y - min_y
-        depth = max_z - min_z
-
-        center_x = (min_x + max_x) / 2.0
-        center_y = (min_y + max_y) / 2.0
-        center_z = (min_z + max_z) / 2.0
-
-        # Triangle count = vertices / 3 (each triangle has 3 verts)
-        triangle_count = len(vertices) // 3
-
-        if ctx:
-            await ctx.info(
-                f"Analysis complete: {triangle_count} triangles, "
-                f"dimensions {width:.2f} x {height:.2f} x "
-                f"{depth:.2f}"
-            )
-
-        response = {
-            "success": diag.ok,
-            "bounding_box": {
-                "min": [min_x, min_y, min_z],
-                "max": [max_x, max_y, max_z],
-            },
-            "dimensions": {
-                "width": width,
-                "height": height,
-                "depth": depth,
-            },
-            "center": [center_x, center_y, center_z],
-            "triangle_count": triangle_count,
-            "mesh_health": diag.mesh_health(),
-        }
-        response.update(diag.to_dict(include_records=False))
-        return response
-
-    except Exception as e:
-        if ctx:
-            await ctx.error(f"Analysis failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-        }
-
-
-@mcp.tool()
 async def get_libraries(
     ctx: Optional[Context] = None,
 ) -> Dict[str, Any]:
@@ -2901,210 +2367,6 @@ async def get_libraries(
             "success": False,
             "error": str(e),
         }
-
-
-@mcp.tool(output_schema=None)
-async def compare_renders(
-    scad_content_before: Optional[str] = None,
-    scad_content_after: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    variables_before: Optional[Dict[str, Any]] = None,
-    variables_after: Optional[Dict[str, Any]] = None,
-    view: Optional[str] = "isometric",
-    image_size: Optional[str] = None,
-    quality: Optional[str] = "draft",
-    ctx: Optional[Context] = None,
-):
-    """
-    Render two versions of a model for visual comparison.
-
-    Supports two modes:
-    1. Two different SCAD contents: provide scad_content_before and
-       scad_content_after.
-    2. Same file with different variables: provide scad_file with
-       variables_before and variables_after.
-
-    Both versions are rendered in parallel for efficiency. Uses
-    the existing render_scad_to_png helper and QUALITY_PRESETS.
-
-    Args:
-        scad_content_before: OpenSCAD code for the "before" version
-        scad_content_after: OpenSCAD code for the "after" version
-        scad_file: Path to OpenSCAD file (used with variable diffs)
-        variables_before: Variables for the "before" render
-        variables_after: Variables for the "after" render
-        view: View preset name (default: "isometric"). Valid names:
-            "front", "back", "left", "right", "top", "bottom",
-            "isometric", "dimetric"
-        image_size: Image dimensions - accepts "widthxheight",
-            "width,height", "[width, height]", or [width, height]
-            list (default: [800, 600])
-        quality: Quality preset - "draft", "normal", or "high"
-            (default: "draft")
-        ctx: MCP context for logging
-
-    Returns:
-        List with before/after images and metadata
-    """
-    try:
-        # Validate input combinations
-        has_both_contents = (
-            scad_content_before is not None
-            and scad_content_after is not None
-        )
-        has_file_with_vars = (
-            scad_file is not None
-            and variables_before is not None
-            and variables_after is not None
-        )
-
-        if not has_both_contents and not has_file_with_vars:
-            raise ValueError(
-                "Provide either (scad_content_before + "
-                "scad_content_after) or (scad_file + "
-                "variables_before + variables_after)"
-            )
-
-        # Validate view preset
-        if view and view not in VIEW_PRESETS:
-            raise ValueError(
-                f"Invalid view name '{view}'. "
-                f"Must be one of: "
-                f"{', '.join(VIEW_PRESETS.keys())}"
-            )
-
-        # Validate quality preset
-        if quality and quality not in QUALITY_PRESETS:
-            raise ValueError(
-                f"Invalid quality preset '{quality}'. "
-                f"Must be one of: "
-                f"{', '.join(QUALITY_PRESETS.keys())}"
-            )
-
-        # Parse image size
-        parsed_image_size = parse_image_size_param(
-            image_size, [800, 600]
-        )
-
-        # Get camera settings from view preset
-        if view:
-            preset_pos, preset_target, preset_up = (
-                VIEW_PRESETS[view]
-            )
-            cam_pos = list(preset_pos)
-            cam_target = list(preset_target)
-            cam_up = list(preset_up)
-        else:
-            cam_pos = [200, 200, 200]
-            cam_target = [0, 0, 0]
-            cam_up = [0, 0, 1]
-
-        # Build quality variables
-        quality_vars = {}
-        if quality:
-            quality_vars = dict(QUALITY_PRESETS.get(quality, {}))
-
-        # Prepare before/after render parameters
-        if has_both_contents:
-            before_content = scad_content_before
-            after_content = scad_content_after
-            before_file = None
-            after_file = None
-            before_vars = dict(quality_vars)
-            after_vars = dict(quality_vars)
-            if variables_before:
-                before_vars.update(variables_before)
-            if variables_after:
-                after_vars.update(variables_after)
-        else:
-            before_content = None
-            after_content = None
-            before_file = scad_file
-            after_file = scad_file
-            before_vars = dict(quality_vars)
-            before_vars.update(variables_before)
-            after_vars = dict(quality_vars)
-            after_vars.update(variables_after)
-
-        if ctx:
-            await ctx.info(
-                "Rendering before and after versions in parallel..."
-            )
-
-        # Define render functions for before and after
-        def _render_before():
-            return render_scad_to_png(
-                scad_content=before_content,
-                scad_file=before_file,
-                camera_position=cam_pos,
-                camera_target=cam_target,
-                camera_up=cam_up,
-                image_size=parsed_image_size,
-                color_scheme="Cornfield",
-                variables=before_vars if before_vars else None,
-                auto_center=True,
-            )
-
-        def _render_after():
-            return render_scad_to_png(
-                scad_content=after_content,
-                scad_file=after_file,
-                camera_position=cam_pos,
-                camera_target=cam_target,
-                camera_up=cam_up,
-                image_size=parsed_image_size,
-                color_scheme="Cornfield",
-                variables=after_vars if after_vars else None,
-                auto_center=True,
-            )
-
-        # Render both in parallel, bounded by the configured concurrency
-        loop = asyncio.get_running_loop()
-        semaphore = get_render_semaphore()
-
-        async def _guarded(fn):
-            async with semaphore:
-                return await loop.run_in_executor(None, fn)
-
-        before_raw, after_raw = await asyncio.gather(
-            _guarded(_render_before), _guarded(_render_after)
-        )
-        before_res = _as_render_result(before_raw)
-        after_res = _as_render_result(after_raw)
-
-        if ctx:
-            await ctx.info("Comparison renders completed")
-
-        before_bytes = base64.b64decode(before_res.image_b64)
-        after_bytes = base64.b64decode(after_res.image_b64)
-
-        before_meta = before_res.metadata()
-        after_meta = after_res.metadata()
-        return [
-            "Before:",
-            MCPImage(data=before_bytes, format="png"),
-            "After:",
-            MCPImage(data=after_bytes, format="png"),
-            json.dumps({
-                "success": not before_meta.get("errors") and not after_meta.get("errors"),
-                "view": view or "isometric",
-                "quality": quality or "draft",
-                "before": before_meta,
-                "after": after_meta,
-            }),
-        ]
-
-    except Exception as e:
-        if ctx:
-            await ctx.error(
-                f"Comparison render failed: {str(e)}"
-            )
-        return [
-            json.dumps({
-                "success": False,
-                "error": str(e),
-            })
-        ]
 
 
 # ============================================================================
@@ -3282,8 +2544,1121 @@ async def get_project_files(
 
 
 # ============================================================================
+# Geometry helpers shared by render / measure / validate
+# ============================================================================
+
+# Views rendered by render(mode="views") when none are requested.
+DEFAULT_RENDER_VIEWS = ("isometric",)
+
+# Palette for per-part colouring (camera.PALETTE when available).
+_FALLBACK_PALETTE = [
+    "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
+    "#D55E00", "#CC79A7", "#999999", "#000000", "#8B4513",
+]
+
+
+def _palette() -> List[str]:
+    try:
+        from .camera import PALETTE
+
+        return list(PALETTE)
+    except Exception:  # pragma: no cover - camera module optional at import time
+        return list(_FALLBACK_PALETTE)
+
+
+class _ModelSource:
+    """Resolve (scad_content | scad_file) to a file path that wrappers can include.
+
+    Inline content is written to the temp dir for the lifetime of the
+    context manager; a file path is validated against ``allowed_paths``.
+    """
+
+    def __init__(self, scad_content: Optional[str], scad_file: Optional[str], prefix: str):
+        if bool(scad_content) == bool(scad_file):
+            raise ValueError("Exactly one of scad_content or scad_file must be provided")
+        self.scad_content = scad_content
+        self.scad_file = scad_file
+        self.prefix = prefix
+        self.path: Optional[Path] = None
+        self._temp: Optional[Path] = None
+
+    def __enter__(self) -> "_ModelSource":
+        config = get_config()
+        if self.scad_content:
+            _validate_source_size(self.scad_content)
+            temp_dir_path = Path(config.temp_dir)
+            temp_dir_path.mkdir(parents=True, exist_ok=True)
+            self._temp = temp_dir_path / f"{self.prefix}_{uuid.uuid4().hex[:8]}.scad"
+            self._temp.write_text(self.scad_content)
+            self.path = self._temp
+        else:
+            _check_allowed_path(self.scad_file or "", "File path")
+            self.path = Path(self.scad_file or "")
+            if not self.path.exists():
+                raise FileNotFoundError(f"SCAD file not found: {self.scad_file}")
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._temp is not None:
+            try:
+                self._temp.unlink()
+            except OSError:
+                pass
+
+    @property
+    def inline_path(self) -> Optional[str]:
+        return str(self._temp) if self._temp is not None else None
+
+
+_measure_cache: Dict[str, Tuple[Any, Diagnostics]] = {}
+_MEASURE_CACHE_MAX = 32
+
+
+def _measure_cache_key(source: _ModelSource, variables, include_paths, extra: str = "") -> str:
+    hasher = hashlib.sha256()
+    if source.scad_content:
+        _hash_field(hasher, source.scad_content.encode())
+    else:
+        try:
+            st = Path(source.scad_file or "").stat()
+            _hash_field(hasher, f"{source.scad_file}|{st.st_size}|{st.st_mtime_ns}")
+        except OSError:
+            _hash_field(hasher, str(source.scad_file))
+    _hash_field(hasher, variables or {})
+    _hash_field(hasher, include_paths or [])
+    _hash_field(hasher, extra)
+    _hash_field(hasher, f"{find_openscad()}|{get_openscad_capabilities().get('version')}")
+    return hasher.hexdigest()
+
+
+def _analyze_mesh_export(
+    wrapper_content: Optional[str],
+    scad_file: Optional[str],
+    variables: Optional[Dict[str, Any]],
+    include_paths: Optional[List[str]],
+    prefix: str,
+    apply_variables: bool,
+) -> Tuple[Any, Diagnostics, Optional[Path]]:
+    """Export to STL (or SVG for 2D models) and analyse the geometry.
+
+    Returns ``(stats, diagnostics, svg_path_or_None)``. ``stats`` is a
+    ``mesh.MeshStats`` for 3D models or a ``mesh.Polygon2DStats`` for 2D
+    models. Raises RuntimeError when OpenSCAD produced no geometry.
+    """
+    from . import mesh as meshlib
+
+    config = get_config()
+    temp_dir_path = Path(config.temp_dir)
+    temp_dir_path.mkdir(parents=True, exist_ok=True)
+    stl_output = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.stl"
+    try:
+        ev = _evaluate_scad(
+            wrapper_content, scad_file, str(stl_output), None,
+            variables if apply_variables else None, include_paths, "export", prefix,
+        )
+        diag = ev.diagnostics
+        if ev.output_path is not None and ev.output_path.stat().st_size > 0:
+            stats = meshlib.analyze_stl(ev.output_path)
+            return stats, diag, None
+    finally:
+        if stl_output.exists():
+            stl_output.unlink()
+
+    # A 2D model or an empty one. Try a 2D export before giving up.
+    is_2d = any("2D" in w for w in diag.warnings) or diag.empty_output or diag.returncode != 0
+    if is_2d:
+        svg_output = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.svg"
+        try:
+            ev2 = _evaluate_scad(
+                wrapper_content, scad_file, str(svg_output), None,
+                variables if apply_variables else None, include_paths, "export", prefix,
+            )
+            if ev2.output_path is not None:
+                polys = meshlib.load_svg_polygons(ev2.output_path)
+                return meshlib.analyze_polygons(polys), ev2.diagnostics, None
+        finally:
+            if svg_output.exists():
+                svg_output.unlink()
+    detail = "; ".join(diag.errors) if diag.errors else "OpenSCAD produced no geometry"
+    if diag.empty_output:
+        detail = "the model evaluates to no geometry (Current top level object is empty)"
+    raise RuntimeError(f"Measurement failed: {detail}")
+
+
+def _measure_source(
+    source: _ModelSource,
+    variables: Optional[Dict[str, Any]],
+    include_paths: Optional[List[str]],
+    part_code: Optional[str] = None,
+) -> Tuple[Any, Diagnostics]:
+    """Measure the whole model, or one part of it, with an in-process cache."""
+    from .wrappers import part_wrapper
+
+    key = _measure_cache_key(source, variables, include_paths, extra=part_code or "")
+    cached = _measure_cache.get(key)
+    if cached is not None:
+        return cached
+    if part_code is not None:
+        wrapper = part_wrapper(source.path or Path(), part_code, variables)
+        stats, diag, _ = _analyze_mesh_export(
+            wrapper, None, variables, include_paths, "part", apply_variables=False
+        )
+    elif source.scad_content:
+        stats, diag, _ = _analyze_mesh_export(
+            source.scad_content, None, variables, include_paths, "measure", apply_variables=True
+        )
+    else:
+        stats, diag, _ = _analyze_mesh_export(
+            None, source.scad_file, variables, include_paths, "measure", apply_variables=True
+        )
+    if len(_measure_cache) >= _MEASURE_CACHE_MAX:
+        _measure_cache.pop(next(iter(_measure_cache)))
+    _measure_cache[key] = (stats, diag)
+    return stats, diag
+
+
+def _section_polygons(
+    source: _ModelSource,
+    axis: str,
+    offset: float,
+    variables: Optional[Dict[str, Any]],
+    include_paths: Optional[List[str]],
+) -> Tuple[List[List[Tuple[float, float]]], Diagnostics]:
+    """Cut the model and return the section contours in model coordinates."""
+    from . import mesh as meshlib
+    from .wrappers import section_wrapper
+
+    config = get_config()
+    temp_dir_path = Path(config.temp_dir)
+    temp_dir_path.mkdir(parents=True, exist_ok=True)
+    svg_output = temp_dir_path / f"section_{uuid.uuid4().hex[:8]}.svg"
+    wrapper = section_wrapper(source.path or Path(), axis, offset, variables)
+    try:
+        ev = _evaluate_scad(
+            wrapper, None, str(svg_output), None, None, include_paths, "export", "section"
+        )
+        if ev.output_path is None:
+            # A plane that misses the solid: WARNING: Projection() failed, exit 1
+            return [], ev.diagnostics
+        return meshlib.load_svg_polygons(ev.output_path), ev.diagnostics
+    finally:
+        if svg_output.exists():
+            svg_output.unlink()
+
+
+def _draw_section_png(
+    polys: List[List[Tuple[float, float]]],
+    image_size: List[int],
+    axes_labels: Tuple[str, str],
+    title: str,
+) -> Tuple[bytes, float, Tuple[float, float, float, float]]:
+    """Rasterise section polygons with Pillow. Returns (png, mm_per_px, bbox)."""
+    import io
+
+    from PIL import ImageDraw
+
+    w, h = int(image_size[0]), int(image_size[1])
+    img = PILImage.new("RGBA", (w, h), (255, 255, 229, 255))
+    draw = ImageDraw.Draw(img)
+    if not polys:
+        return _png_bytes(img.convert("RGB")), 0.0, (0.0, 0.0, 0.0, 0.0)
+    xs = [p[0] for poly in polys for p in poly]
+    ys = [p[1] for poly in polys for p in poly]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x = max(max_x - min_x, 1e-9)
+    span_y = max(max_y - min_y, 1e-9)
+    margin = 0.1
+    mm_per_px = max(span_x / (w * (1 - 2 * margin)), span_y / (h * (1 - 2 * margin)))
+    cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+
+    def to_px(p: Tuple[float, float]) -> Tuple[float, float]:
+        return (w / 2 + (p[0] - cx) / mm_per_px, h / 2 - (p[1] - cy) / mm_per_px)
+
+    # Even-odd fill: draw every polygon, alternating fill on nesting is
+    # approximated by drawing outer polygons first (by |area| desc) and holes
+    # (negative signed area) in the background colour.
+    def signed_area(poly):
+        return sum(
+            poly[i][0] * poly[(i + 1) % len(poly)][1] - poly[(i + 1) % len(poly)][0] * poly[i][1]
+            for i in range(len(poly))
+        ) / 2
+
+    ordered = sorted(polys, key=lambda p: -abs(signed_area(p)))
+    for poly in ordered:
+        pts = [to_px(p) for p in poly]
+        fill = (255, 255, 229, 255) if signed_area(poly) < 0 else (86, 180, 233, 255)
+        draw.polygon(pts, fill=fill, outline=(0, 0, 0, 255))
+    try:
+        from . import camera as cam
+
+        font = cam._load_font(16)
+        cam._draw_scale_bar(draw, font, mm_per_px, (w, h), 12)
+    except Exception:  # pragma: no cover - annotation is best effort
+        font = None
+    draw.text(
+        (8, 8),
+        f"{title}  ({axes_labels[0]} right, {axes_labels[1]} up)",
+        fill=(0, 0, 0, 255),
+        font=font,
+    )
+    return _png_bytes(img.convert("RGB")), mm_per_px, (min_x, min_y, max_x, max_y)
+
+
+def _png_bytes(img: "PILImage.Image") -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _bbox_of(stats: Any) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+    bmin = getattr(stats, "bbox_min", None)
+    bmax = getattr(stats, "bbox_max", None)
+    if bmin is None or bmax is None or len(bmin) != 3:
+        return None
+    return tuple(bmin), tuple(bmax)  # type: ignore[return-value]
+
+
+def _apply_quality(variables: Optional[Dict[str, Any]], quality: Optional[str]) -> Dict[str, Any]:
+    parsed = parse_dict_param(variables, {})
+    if quality:
+        if quality not in QUALITY_PRESETS:
+            raise ValueError(
+                f"Invalid quality preset '{quality}'. Must be one of: "
+                f"{', '.join(QUALITY_PRESETS.keys())}"
+            )
+        merged = dict(QUALITY_PRESETS[quality])
+        merged.update(parsed)
+        parsed = merged
+    return parsed
+
+
+def _validate_views(views: Any, default: Tuple[str, ...]) -> List[str]:
+    parsed = list(default) if views is None else parse_list_param(views, list(default))
+    invalid = [v for v in parsed if v not in VIEW_PRESETS]
+    if invalid:
+        raise ValueError(
+            f"Invalid view name(s): {', '.join(invalid)}. "
+            f"Must be one of: {', '.join(VIEW_PRESETS.keys())}"
+        )
+    return parsed
+
+
+def _parse_parts(parts: Any) -> List[Dict[str, str]]:
+    """Accept [{"name","code"}], {"name": "code"}, or JSON text of either."""
+    if isinstance(parts, str):
+        try:
+            parts = json.loads(parts)
+        except json.JSONDecodeError as exc:
+            raise ValueError("parts must be a list of {name, code} objects") from exc
+    if isinstance(parts, dict):
+        parts = [{"name": k, "code": v} for k, v in parts.items()]
+    if not isinstance(parts, list) or not parts:
+        raise ValueError("parts must be a non-empty list of {name, code} objects")
+    out: List[Dict[str, str]] = []
+    for item in parts:
+        if isinstance(item, str):
+            out.append({"name": item.rstrip("();").strip(), "code": item})
+            continue
+        if not isinstance(item, dict) or "code" not in item:
+            raise ValueError("each part needs a 'code' statement, e.g. {'name':'lid','code':'lid();'}")
+        name = str(item.get("name") or item["code"].rstrip("();").strip())
+        out.append({"name": name, "code": str(item["code"])})
+    return out
+
+
+def _render_one_view(
+    source_content: Optional[str],
+    source_file: Optional[str],
+    view: Optional[str],
+    camera_position: Optional[List[float]],
+    camera_target: Optional[List[float]],
+    camera_up: Optional[List[float]],
+    image_size: List[int],
+    color_scheme: str,
+    variables: Dict[str, Any],
+    include_paths: Optional[List[str]],
+    grounded_bbox: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]],
+    annotate: bool,
+) -> Tuple[bytes, str, Dict[str, Any]]:
+    """Render one image and build its spatial digest. Returns (png, digest, meta)."""
+    from . import camera as cam
+
+    if view:
+        preset_pos, preset_target, preset_up = VIEW_PRESETS[view]
+        eye, center, up = list(preset_pos), list(preset_target), list(preset_up)
+    else:
+        eye = camera_position or [70, 70, 70]
+        center = camera_target or [0, 0, 0]
+        up = camera_up or [0, 0, 1]
+
+    grounded = grounded_bbox is not None
+    if grounded:
+        bmin, bmax = grounded_bbox  # type: ignore[misc]
+        direction = [eye[i] - center[i] for i in range(3)]
+        ortho = cam.fit_camera(bmin, bmax, tuple(direction), tuple(up), (image_size[0], image_size[1]))
+        eye, center = list(ortho.eye), list(ortho.center)
+        result = _as_render_result(render_scad_to_png(
+            scad_content=source_content, scad_file=source_file,
+            camera_position=eye, camera_target=center, camera_up=up,
+            image_size=image_size, color_scheme=color_scheme, variables=variables,
+            auto_center=False, include_paths=include_paths, projection="o",
+        ))
+        png = base64.b64decode(result.image_b64)
+        if annotate:
+            png = cam.annotate(png, ortho, bbox_min=bmin, bbox_max=bmax, label=view)
+        digest = cam.spatial_digest(ortho, bbox_min=bmin, bbox_max=bmax, view_name=view, grounded=True)
+    else:
+        result = _as_render_result(render_scad_to_png(
+            scad_content=source_content, scad_file=source_file,
+            camera_position=eye, camera_target=center, camera_up=up,
+            image_size=image_size, color_scheme=color_scheme, variables=variables,
+            auto_center=True, include_paths=include_paths,
+        ))
+        png = base64.b64decode(result.image_b64)
+        ortho = cam.OrthoCamera(tuple(eye), tuple(center), tuple(up), (image_size[0], image_size[1]))
+        digest = cam.spatial_digest(
+            ortho, projection="perspective", view_name=view, grounded=False
+        )
+    return png, digest, result.metadata()
+
+
+# ============================================================================
+# render
+# ============================================================================
+
+
+@mcp.tool(output_schema=None)
+async def render(
+    scad_content: Optional[str] = None,
+    scad_file: Optional[str] = None,
+    mode: str = "views",
+    views: Optional[List[str]] = None,
+    camera_position: Union[str, List[float], Dict[str, float], None] = None,
+    camera_target: Union[str, List[float], Dict[str, float], None] = None,
+    camera_up: Union[str, List[float], Dict[str, float], None] = None,
+    image_size: Union[str, List[int], None] = None,
+    color_scheme: str = "Cornfield",
+    variables: Optional[Dict[str, Any]] = None,
+    quality: Optional[str] = None,
+    include_paths: Optional[List[str]] = None,
+    grounded: bool = False,
+    annotate: bool = False,
+    section_axis: str = "z",
+    section_offset: float = 0.0,
+    parts: Optional[List[Dict[str, str]]] = None,
+    isolate: Optional[str] = None,
+    variables_after: Optional[Dict[str, Any]] = None,
+    scad_content_after: Optional[str] = None,
+    ctx: Optional[Context] = None,
+):
+    """
+    Render images of an OpenSCAD model. Every image is preceded by a text
+    digest (camera, view direction, scale, bbox) and followed by metadata
+    with errors/warnings/hints; check those, since OpenSCAD draws a blank
+    scene and exits 0 on a failed assert or unknown module.
+
+    mode:
+      "views": one image per entry in views (default ["isometric"]; names:
+        front back left right top bottom isometric dimetric), or a custom
+        camera when views is omitted and camera_position is given.
+      "section": exact cross-section at section_axis=section_offset (mm),
+        drawn from the cut geometry with a scale bar. Numbers via
+        measure(mode="section").
+      "parts": colour each part from parts=[{name, code}] (code is a call
+        like "lid();" using the model's modules); isolate=name ghosts the
+        others. Legend is in the digest.
+      "compare": before/after using variables_after or scad_content_after.
+    grounded=true measures the model first and uses an orthographic camera
+    with a stated mm/px scale (costs one mesh export); annotate=true adds a
+    scale bar, axis triad and bbox dimensions (requires grounded).
+    Auto-fit views (grounded=false) have no recoverable absolute scale.
+    quality: draft|normal|high. image_size default 800x600 (~640 tokens).
+    """
+    if ctx:
+        await ctx.info(f"render mode={mode}")
+    try:
+        if bool(scad_content) == bool(scad_file):
+            raise ValueError("Exactly one of scad_content or scad_file must be provided")
+        mode = (mode or "views").lower()
+        if mode not in ("views", "section", "parts", "compare"):
+            raise ValueError("mode must be one of: views, section, parts, compare")
+        parsed_size = _clamp_image_size(parse_image_size_param(image_size, [800, 600]))
+        parsed_vars = _apply_quality(variables, quality)
+        if annotate and not grounded and mode == "views":
+            grounded = True
+        loop = asyncio.get_running_loop()
+        semaphore = get_render_semaphore()
+        items: List[Any] = []
+        meta: Dict[str, Any] = {"mode": mode, "image_size": parsed_size}
+
+        if mode == "views":
+            custom_camera = views is None and (
+                camera_position is not None or camera_target is not None
+            )
+            view_list: List[Optional[str]] = (
+                [None] if custom_camera else list(_validate_views(views, DEFAULT_RENDER_VIEWS))
+            )
+            cam_pos = parse_camera_param(camera_position, [70, 70, 70]) if custom_camera else None
+            cam_tgt = parse_camera_param(camera_target, [0, 0, 0]) if custom_camera else None
+            cam_up = parse_camera_param(camera_up, [0, 0, 1]) if custom_camera else None
+            bbox = None
+            if grounded:
+                with _ModelSource(scad_content, scad_file, "ground") as src:
+                    async with semaphore:
+                        stats, _diag = await loop.run_in_executor(
+                            None, _measure_source, src, parsed_vars, include_paths
+                        )
+                bbox = _bbox_of(stats)
+                if bbox is None:
+                    raise ValueError("grounded rendering needs a 3D model with a bounding box")
+
+            async def _one(v: Optional[str]):
+                async with semaphore:
+                    return await loop.run_in_executor(
+                        None, _render_one_view, scad_content, scad_file, v,
+                        cam_pos, cam_tgt, cam_up, parsed_size, color_scheme, parsed_vars,
+                        include_paths, bbox, annotate,
+                    )
+
+            results = await asyncio.gather(*[_one(v) for v in view_list], return_exceptions=True)
+            failed: Dict[str, str] = {}
+            for v, res in zip(view_list, results):
+                name = v or "custom"
+                if isinstance(res, Exception):
+                    failed[name] = str(res)
+                    continue
+                png, digest, m = res
+                items.append(f"View: {name}\n{digest}")
+                items.append(MCPImage(data=png, format="png"))
+                if "errors" not in meta:
+                    meta.update({k: m[k] for k in ("errors", "warnings", "hints", "echo_output", "cached") if k in m})
+            meta["views"] = [v or "custom" for v, r in zip(view_list, results) if not isinstance(r, Exception)]
+            if failed:
+                meta["failed_views"] = failed
+            if bbox is not None:
+                meta["bbox"] = {"min": list(bbox[0]), "max": list(bbox[1])}
+            meta["image_tokens"] = image_token_estimate(*parsed_size) * len(meta["views"])
+            meta["success"] = not failed and not meta.get("errors")
+
+        elif mode == "section":
+            from .wrappers import section_in_plane_axes
+
+            with _ModelSource(scad_content, scad_file, "section") as src:
+                async with semaphore:
+                    polys, diag = await loop.run_in_executor(
+                        None, _section_polygons, src, section_axis, section_offset,
+                        parsed_vars, include_paths,
+                    )
+            axes_labels = section_in_plane_axes(section_axis)
+            title = f"section {section_axis.lower()} = {section_offset} mm"
+            png, mm_per_px, sbbox = _draw_section_png(polys, parsed_size, axes_labels, title)
+            meta.update(diag.to_dict(include_records=False))
+            if not polys:
+                digest = (
+                    f"{title}: the cut plane misses the model (no section geometry). "
+                    "Try a different offset; use measure(mode=model) for the bbox."
+                )
+                meta["empty_section"] = True
+            else:
+                digest = (
+                    f"{title} | in-plane axes: {axes_labels[0]} right, {axes_labels[1]} up | units mm\n"
+                    f"scale: {mm_per_px:.4g} mm/px | section bbox "
+                    f"[{sbbox[0]:.3g},{sbbox[1]:.3g}]..[{sbbox[2]:.3g},{sbbox[3]:.3g}] | "
+                    f"{len(polys)} contour(s)"
+                )
+            items.append(digest)
+            items.append(MCPImage(data=png, format="png"))
+            meta["contours"] = len(polys)
+            meta["image_tokens"] = image_token_estimate(*parsed_size)
+            meta["success"] = not diag.errors
+
+        elif mode == "parts":
+            from .wrappers import parts_wrapper
+
+            part_list = _parse_parts(parts)
+            palette = _palette()
+            with _ModelSource(scad_content, scad_file, "parts") as src:
+                wrapper = parts_wrapper(
+                    src.path or Path(), part_list, palette, isolate=isolate, variables=parsed_vars
+                )
+                view_list2 = list(_validate_views(views, DEFAULT_RENDER_VIEWS))
+                bbox = None
+                if grounded:
+                    async with semaphore:
+                        stats, _diag = await loop.run_in_executor(
+                            None, _measure_source, src, parsed_vars, include_paths
+                        )
+                    bbox = _bbox_of(stats)
+
+                async def _one_part_view(v: str):
+                    async with semaphore:
+                        return await loop.run_in_executor(
+                            None, _render_one_view, wrapper, None, v, None, None, None,
+                            parsed_size, color_scheme, {}, include_paths, bbox, annotate,
+                        )
+
+                results = await asyncio.gather(*[_one_part_view(v) for v in view_list2])
+            legend = " | ".join(
+                f"{p['name']}={palette[i % len(palette)]}"
+                + (" (ghost)" if isolate and p["name"] != isolate else "")
+                for i, p in enumerate(part_list)
+            )
+            for v, (png, digest, m) in zip(view_list2, results):
+                items.append(f"View: {v}\nparts: {legend}\n{digest}")
+                items.append(MCPImage(data=png, format="png"))
+                if "errors" not in meta:
+                    meta.update({k: m[k] for k in ("errors", "warnings", "hints") if k in m})
+            meta["parts"] = [
+                {"name": p["name"], "color": palette[i % len(palette)]} for i, p in enumerate(part_list)
+            ]
+            meta["image_tokens"] = image_token_estimate(*parsed_size) * len(view_list2)
+            meta["success"] = not meta.get("errors")
+
+        else:  # compare
+            if variables_after is None and scad_content_after is None:
+                raise ValueError("compare needs variables_after or scad_content_after")
+            after_vars = dict(parsed_vars)
+            if variables_after:
+                after_vars.update(parse_dict_param(variables_after, {}))
+            view_name = list(_validate_views(views, DEFAULT_RENDER_VIEWS))[0]
+
+            async def _side(content: Optional[str], file: Optional[str], vars_: Dict[str, Any]):
+                async with semaphore:
+                    return await loop.run_in_executor(
+                        None, _render_one_view, content, file, view_name, None, None, None,
+                        parsed_size, color_scheme, vars_, include_paths, None, False,
+                    )
+
+            before, after = await asyncio.gather(
+                _side(scad_content, scad_file, parsed_vars),
+                _side(scad_content_after or scad_content, None if scad_content_after else scad_file, after_vars),
+            )
+            for label, (png, digest, m) in (("Before", before), ("After", after)):
+                items.append(f"{label}: view {view_name}\n{digest}")
+                items.append(MCPImage(data=png, format="png"))
+                meta[label.lower()] = {k: m[k] for k in ("errors", "warnings", "hints") if k in m}
+            meta["view"] = view_name
+            meta["image_tokens"] = image_token_estimate(*parsed_size) * 2
+            meta["success"] = not meta["before"].get("errors") and not meta["after"].get("errors")
+
+        items.append(json.dumps(meta))
+        return items
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"render failed: {e}")
+        return [json.dumps({"success": False, "mode": mode, "error": str(e)})]
+
+
+# ============================================================================
+# measure
+# ============================================================================
+
+
+def _stats_dict(stats: Any, detailed: bool) -> Dict[str, Any]:
+    if hasattr(stats, "to_dict"):
+        try:
+            return stats.to_dict(detailed=detailed)
+        except TypeError:
+            return stats.to_dict()
+    return dict(stats)
+
+
+@mcp.tool()
+async def measure(
+    scad_content: Optional[str] = None,
+    scad_file: Optional[str] = None,
+    mode: str = "model",
+    variables: Optional[Dict[str, Any]] = None,
+    include_paths: Optional[List[str]] = None,
+    parts: Optional[List[Dict[str, str]]] = None,
+    section_axis: str = "z",
+    section_offset: float = 0.0,
+    material: Optional[str] = None,
+    density_g_cm3: Optional[float] = None,
+    mesh: Optional[str] = None,
+    response_format: str = "concise",
+    ctx: Optional[Context] = None,
+) -> Dict[str, Any]:
+    """
+    Exact numbers about a model from its exported geometry (units mm, mm^2,
+    mm^3). Prefer this over judging a picture.
+
+    mode:
+      "model": bbox, dimensions, center, volume, surface area, solid and
+        cavity counts, watertight flag, open/non-manifold edge counts,
+        plus mesh_health from OpenSCAD. 2D models return area/perimeter.
+      "parts": the same per part from parts=[{name, code}] (code like
+        "lid();" using the model's modules), plus assembly bbox and which
+        part bboxes overlap (a hint only; not an interference test).
+      "section": contours of the cut at section_axis=section_offset:
+        area, perimeter, bbox, contour count, and the polygon points.
+      "mass": mode=model plus mass in grams for material (PLA, PETG, ABS,
+        ASA, TPU, Nylon, PC, resin) or density_g_cm3.
+    mesh: analyse an existing STL (3D) or SVG (2D) file instead of source.
+    response_format: "concise" (rounded, first components) or "detailed".
+    """
+    from . import mesh as meshlib
+
+    detailed = (response_format or "concise").lower() == "detailed"
+    mode = (mode or "model").lower()
+    try:
+        if mode not in ("model", "parts", "section", "mass"):
+            raise ValueError("mode must be one of: model, parts, section, mass")
+        parsed_vars = parse_dict_param(variables, {})
+        _validate_variable_names(parsed_vars)
+        _validate_include_paths(include_paths)
+        loop = asyncio.get_running_loop()
+        semaphore = get_render_semaphore()
+        result: Dict[str, Any] = {"success": True, "mode": mode, "units": "mm"}
+
+        if mesh:
+            if scad_content or scad_file:
+                raise ValueError("give either mesh or scad_content/scad_file, not both")
+            _check_allowed_path(mesh, "Mesh path")
+            mesh_path = Path(mesh)
+            if not mesh_path.exists():
+                raise FileNotFoundError(f"Mesh file not found: {mesh}")
+            if mesh_path.suffix.lower() == ".svg":
+                stats = meshlib.analyze_polygons(meshlib.load_svg_polygons(mesh_path))
+            else:
+                stats = await loop.run_in_executor(None, meshlib.analyze_stl, mesh_path)
+            result["source"] = str(mesh_path)
+            result.update(_stats_dict(stats, detailed))
+            if mode == "mass":
+                result["mass"] = _mass_block(stats, material, density_g_cm3)
+            return result
+
+        if bool(scad_content) == bool(scad_file):
+            raise ValueError("Exactly one of scad_content, scad_file or mesh must be provided")
+
+        with _ModelSource(scad_content, scad_file, "measure") as src:
+            if mode in ("model", "mass"):
+                async with semaphore:
+                    stats, diag = await loop.run_in_executor(
+                        None, _measure_source, src, parsed_vars, include_paths
+                    )
+                result.update(_stats_dict(stats, detailed))
+                result["mesh_health"] = diag.mesh_health()
+                result.update(diag.to_dict(include_records=False))
+                if mode == "mass":
+                    result["mass"] = _mass_block(stats, material, density_g_cm3)
+                result["success"] = not diag.errors
+
+            elif mode == "parts":
+                part_list = _parse_parts(parts)
+
+                async def _one(p: Dict[str, str]):
+                    async with semaphore:
+                        return await loop.run_in_executor(
+                            None, _measure_source, src, parsed_vars, include_paths, p["code"]
+                        )
+
+                outcomes = await asyncio.gather(*[_one(p) for p in part_list], return_exceptions=True)
+                per_part: List[Dict[str, Any]] = []
+                boxes: List[Tuple[str, Tuple[float, ...], Tuple[float, ...]]] = []
+                errors: List[str] = []
+                for p, out in zip(part_list, outcomes):
+                    if isinstance(out, Exception):
+                        per_part.append({"name": p["name"], "error": str(out)})
+                        errors.append(f"{p['name']}: {out}")
+                        continue
+                    stats, diag = out
+                    entry = {"name": p["name"], "code": p["code"]}
+                    entry.update(_stats_dict(stats, detailed=False))
+                    entry["mesh_health"] = diag.mesh_health()
+                    if diag.errors:
+                        entry["errors"] = diag.errors
+                        errors.extend(diag.errors)
+                    per_part.append(entry)
+                    bb = _bbox_of(stats)
+                    if bb:
+                        boxes.append((p["name"], bb[0], bb[1]))
+                result["parts"] = per_part
+                if boxes:
+                    amin = [min(b[1][i] for b in boxes) for i in range(3)]
+                    amax = [max(b[2][i] for b in boxes) for i in range(3)]
+                    result["assembly_bbox"] = {
+                        "min": amin, "max": amax,
+                        "size": [round(amax[i] - amin[i], 4) for i in range(3)],
+                    }
+                    overlaps = []
+                    for i in range(len(boxes)):
+                        for j in range(i + 1, len(boxes)):
+                            a, b = boxes[i], boxes[j]
+                            if all(a[1][k] < b[2][k] and b[1][k] < a[2][k] for k in range(3)):
+                                overlaps.append([a[0], b[0]])
+                    result["bbox_overlaps"] = overlaps
+                    result["note"] = (
+                        "bbox_overlaps lists part pairs whose bounding boxes intersect; "
+                        "that is not an interference test."
+                    )
+                if errors:
+                    result["errors"] = errors
+                    result["success"] = False
+
+            else:  # section
+                from .wrappers import section_in_plane_axes
+
+                async with semaphore:
+                    polys, diag = await loop.run_in_executor(
+                        None, _section_polygons, src, section_axis, section_offset,
+                        parsed_vars, include_paths,
+                    )
+                axes_labels = section_in_plane_axes(section_axis)
+                result["plane"] = {"axis": section_axis.lower(), "offset": section_offset}
+                result["in_plane_axes"] = {"x": axes_labels[0], "y": axes_labels[1]}
+                if not polys:
+                    result["empty_section"] = True
+                    result["contours"] = []
+                    result["note"] = "the cut plane misses the model"
+                else:
+                    pstats = meshlib.analyze_polygons(polys)
+                    result.update(_stats_dict(pstats, detailed))
+                    cap = 400 if detailed else 60
+                    result["contours"] = [
+                        [[round(x, 4), round(y, 4)] for x, y in poly[:cap]]
+                        + ([["...", f"{len(poly) - cap} more"]] if len(poly) > cap else [])
+                        for poly in polys
+                    ]
+                result.update(diag.to_dict(include_records=False))
+                result["success"] = not diag.errors
+        return result
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"measure failed: {e}")
+        return {"success": False, "mode": mode, "error": str(e)}
+
+
+def _mass_block(stats: Any, material: Optional[str], density: Optional[float]) -> Dict[str, Any]:
+    from . import mesh as meshlib
+
+    volume = getattr(stats, "volume", None)
+    if volume is None:
+        raise ValueError("mass needs a 3D model with a volume")
+    if density is None:
+        if not material:
+            raise ValueError("mass needs material or density_g_cm3")
+        key = next((k for k in meshlib.MATERIAL_DENSITIES if k.lower() == material.lower()), None)
+        if key is None:
+            raise ValueError(
+                f"unknown material '{material}'; known: {', '.join(meshlib.MATERIAL_DENSITIES)}"
+            )
+        density = meshlib.MATERIAL_DENSITIES[key]
+        material = key
+    grams = meshlib.mass_from_volume(volume, density)
+    return {
+        "material": material,
+        "density_g_cm3": density,
+        "grams": float(f"{grams:.4g}"),
+        "note": "solid infill; real prints weigh less with sparse infill",
+    }
+
+
+# ============================================================================
+# validate
+# ============================================================================
+
+
+@mcp.tool()
+async def validate(
+    scad_content: Optional[str] = None,
+    scad_file: Optional[str] = None,
+    mode: str = "syntax",
+    variables: Optional[Dict[str, Any]] = None,
+    include_paths: Optional[List[str]] = None,
+    predicates: Optional[List[str]] = None,
+    ctx: Optional[Context] = None,
+) -> Dict[str, Any]:
+    """
+    Check a model. "valid" is false whenever an ERROR was reported, whatever
+    OpenSCAD's exit code was.
+
+    mode:
+      "syntax": parse and evaluate without geometry (fast). Returns errors,
+        warnings, echo_output, hints, unresolved_includes with locations.
+      "geometry": export the mesh and report findings: not watertight,
+        non-manifold, several solids, cavities, empty; with the numbers.
+      "predicates": evaluate predicates=["W > 10", "H == 2*W", ...] in the
+        model's own variable scope; each must be true.
+      "includes": list every include/use/import/surface reference with the
+        path OpenSCAD resolved it to, or null when it could not be found.
+    """
+    mode = (mode or "syntax").lower()
+    try:
+        if bool(scad_content) == bool(scad_file):
+            raise ValueError("Exactly one of scad_content or scad_file must be provided")
+        if mode not in ("syntax", "geometry", "predicates", "includes"):
+            raise ValueError("mode must be one of: syntax, geometry, predicates, includes")
+        parsed_vars = parse_dict_param(variables, {})
+        _validate_variable_names(parsed_vars)
+        null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
+        loop = asyncio.get_running_loop()
+        semaphore = get_render_semaphore()
+        if ctx:
+            await ctx.info(f"validate mode={mode}")
+
+        if mode == "syntax":
+            async with semaphore:
+                ev = await loop.run_in_executor(
+                    None, _evaluate_scad, scad_content, scad_file, null_output, "csg",
+                    parsed_vars, include_paths, "validation", "validate",
+                )
+            diag = ev.diagnostics
+            response: Dict[str, Any] = {"success": True, "mode": mode, "valid": diag.ok}
+            response.update(diag.to_dict(include_records=True))
+            missing = unresolved_includes(diag)
+            if missing:
+                response["unresolved_includes"] = missing
+            return response
+
+        if mode == "geometry":
+            with _ModelSource(scad_content, scad_file, "validate") as src:
+                async with semaphore:
+                    stats, diag = await loop.run_in_executor(
+                        None, _measure_source, src, parsed_vars, include_paths
+                    )
+            findings: List[Dict[str, Any]] = []
+            health = diag.mesh_health()
+            if health.get("manifold") is False:
+                findings.append({"code": "non_manifold", "detail": health.get("issue", "")})
+            if getattr(stats, "is_watertight", True) is False:
+                findings.append({
+                    "code": "open_edges",
+                    "detail": f"{getattr(stats, 'open_edge_count', 0)} open edge(s); the mesh is not closed",
+                })
+            if getattr(stats, "non_manifold_edge_count", 0):
+                findings.append({
+                    "code": "non_manifold_edges",
+                    "detail": f"{stats.non_manifold_edge_count} edge(s) shared by more than two faces",
+                })
+            if getattr(stats, "solid_count", 1) > 1:
+                findings.append({
+                    "code": "multiple_solids",
+                    "detail": f"{stats.solid_count} separate solids; intended for a single part?",
+                })
+            if getattr(stats, "cavity_count", 0):
+                findings.append({
+                    "code": "cavities",
+                    "detail": f"{stats.cavity_count} enclosed cavity(ies); unprintable trapped volume unless intended",
+                })
+            if getattr(stats, "degenerate_triangle_count", 0):
+                findings.append({
+                    "code": "degenerate_triangles",
+                    "detail": f"{stats.degenerate_triangle_count} zero-area triangle(s)",
+                })
+            for err in diag.errors:
+                findings.append({"code": "openscad_error", "detail": err})
+            response = {
+                "success": True,
+                "mode": mode,
+                "valid": not findings,
+                "findings": findings,
+                "mesh_health": health,
+                "summary": _stats_dict(stats, detailed=False),
+            }
+            response.update(diag.to_dict(include_records=False))
+            return response
+
+        if mode == "predicates":
+            from .wrappers import collect_eval_results, eval_wrapper
+
+            exprs = parse_list_param(predicates, [])
+            if not exprs:
+                raise ValueError("predicates must be a non-empty list of OpenSCAD boolean expressions")
+            with _ModelSource(scad_content, scad_file, "pred") as src:
+                wrapper = eval_wrapper(src.path or Path(), [str(e) for e in exprs], parsed_vars)
+                async with semaphore:
+                    ev = await loop.run_in_executor(
+                        None, _evaluate_scad, wrapper, None, null_output, "csg",
+                        None, include_paths, "validation", "predicates",
+                    )
+            diag = ev.diagnostics
+            evaluated = collect_eval_results(diag.echo_output, len(exprs))
+            results = []
+            for expr, r in zip(exprs, evaluated):
+                passed = r.get("evaluated") and r.get("value") is True
+                results.append({
+                    "predicate": expr,
+                    "pass": bool(passed),
+                    "value": r.get("value"),
+                    "type": r.get("type", "undef"),
+                })
+            response = {
+                "success": True,
+                "mode": mode,
+                "valid": all(r["pass"] for r in results) and not diag.errors,
+                "results": results,
+            }
+            response.update(diag.to_dict(include_records=False))
+            return response
+
+        # includes
+        with _ModelSource(scad_content, scad_file, "inc") as src:
+            text = src.scad_content if src.scad_content else (src.path or Path()).read_text(errors="replace")
+            references = extract_source_dependencies(text)
+            async with semaphore:
+                ev = await loop.run_in_executor(
+                    None, _evaluate_scad, scad_content, scad_file, null_output, "csg",
+                    parsed_vars, include_paths, "validation", "includes",
+                )
+        diag = ev.diagnostics
+        missing = set(unresolved_includes(diag))
+        resolved: List[Dict[str, Any]] = []
+        for ref in references:
+            match = next(
+                (d for d in ev.dependencies if d.replace("\\", "/").endswith(ref.replace("\\", "/"))),
+                None,
+            )
+            # OpenSCAD records import()/surface() targets it *tried* to read,
+            # so existence must be checked separately.
+            exists = match is not None and Path(match).exists()
+            resolved.append({
+                "reference": ref,
+                "resolved_path": match if exists else None,
+                "found": exists and ref not in missing,
+            })
+        response = {
+            "success": True,
+            "mode": mode,
+            "valid": all(r["found"] for r in resolved) and not diag.errors,
+            "references": resolved,
+            "files_read": [d for d in ev.dependencies if not d.endswith(Path(src.path or "").name)],
+            "search_paths": [str(p) for p in ([Path(p) for p in (include_paths or [])] + _library_search_paths()) if Path(p).exists()],
+        }
+        response.update(diag.to_dict(include_records=False))
+        return response
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"validate failed: {e}")
+        return {"success": False, "mode": mode, "error": str(e)}
+
+
+# ============================================================================
+# scad_eval
+# ============================================================================
+
+
+@mcp.tool()
+async def scad_eval(
+    expressions: List[str],
+    scad_content: Optional[str] = None,
+    scad_file: Optional[str] = None,
+    variables: Optional[Dict[str, Any]] = None,
+    include_paths: Optional[List[str]] = None,
+    ctx: Optional[Context] = None,
+) -> Dict[str, Any]:
+    """
+    Evaluate OpenSCAD expressions and return typed values (number, vector,
+    string, bool, range, undef). With scad_content/scad_file the
+    expressions run in that model's variable and function scope, so
+    "wall*2 + clearance" or "len(hole_positions)" work; without a model
+    they run standalone. Numbers carry OpenSCAD's 6 significant digits.
+    No geometry is evaluated.
+    """
+    from .wrappers import collect_eval_results, eval_wrapper
+
+    try:
+        exprs = [str(e) for e in parse_list_param(expressions, [])]
+        if not exprs:
+            raise ValueError("expressions must be a non-empty list")
+        if scad_content and scad_file:
+            raise ValueError("give at most one of scad_content or scad_file")
+        parsed_vars = parse_dict_param(variables, {})
+        _validate_variable_names(parsed_vars)
+        null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
+        loop = asyncio.get_running_loop()
+        with _ModelSource(scad_content or "// standalone\n" if not scad_file else None, scad_file, "eval") as src:
+            wrapper = eval_wrapper(src.path or Path(), exprs, parsed_vars)
+            async with get_render_semaphore():
+                ev = await loop.run_in_executor(
+                    None, _evaluate_scad, wrapper, None, null_output, "csg",
+                    None, include_paths, "evaluation", "eval",
+                )
+        diag = ev.diagnostics
+        results = collect_eval_results(diag.echo_output, len(exprs))
+        for expr, r in zip(exprs, results):
+            r["expression"] = expr
+        other_echo = [e for e in diag.echo_output if "__OPENSCAD_MCP_EVAL__" not in e]
+        response: Dict[str, Any] = {
+            "success": not diag.errors,
+            "results": results,
+            "errors": diag.errors,
+            "warnings": diag.warnings,
+        }
+        if other_echo:
+            response["echo_output"] = other_echo
+        hints = diag.hints()
+        if hints:
+            response["hints"] = hints
+        return response
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"scad_eval failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# reference
+# ============================================================================
+
+
+@mcp.tool()
+async def reference(
+    topic: str = "conventions",
+    query: Optional[str] = None,
+    detailed: bool = False,
+    ctx: Optional[Context] = None,
+) -> Dict[str, Any]:
+    """
+    Sourced engineering data for 3D-printed parts, each entry with a
+    confidence label (standard / consensus / calibrate). topics: fits
+    (clearances per side and diametral, $slop), fasteners (metric screws,
+    clearance and tap holes), inserts (heat-set), bearings, magnets,
+    joints (dovetail, snap, press, hinge; BOSL2 module names), conventions,
+    cheatsheet (OpenSCAD gotchas), dfm (FDM design rules), materials.
+    query filters entries, e.g. topic="fasteners", query="M3".
+    """
+    from . import reference as ref
+
+    try:
+        if topic == "list":
+            return {"success": True, "topics": ref.list_topics()}
+        data = ref.lookup(topic, query, detailed=detailed)
+        data["success"] = True
+        return data
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"reference failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
 # MCP Resources
 # ============================================================================
+
+
+@mcp.resource("openscad://conventions", mime_type="text/plain")
+def conventions_resource() -> str:
+    """Assembly and coordinate conventions the model should follow."""
+    return _server_instructions()
+
+
+@mcp.resource("openscad://cheatsheet", mime_type="text/plain")
+def cheatsheet_resource() -> str:
+    """OpenSCAD syntax reminders for things language models get wrong."""
+    from .reference import cheatsheet
+
+    return cheatsheet()
+
+
+@mcp.resource("openscad://reference/{topic}", mime_type="application/json")
+def reference_resource(topic: str) -> Dict[str, Any]:
+    """Engineering reference data for one topic (see the reference tool)."""
+    from .reference import lookup
+
+    return lookup(topic, None, detailed=True)
 
 
 @mcp.resource("resource://server/info")

@@ -1,0 +1,15 @@
+{
+  "name": "openscad-mcp",
+  "owner": {
+    "name": "Coop",
+    "url": "https://github.com/quellant"
+  },
+  "description": "OpenSCAD tooling for AI assistants: rendering, measurement, validation, and export, plus a design skill for 3D-printable parts.",
+  "plugins": [
+    {
+      "name": "openscad-mcp",
+      "source": "./",
+      "description": "OpenSCAD rendering, measurement, validation, and export as MCP tools, plus the openscad-design skill."
+    }
+  ]
+}

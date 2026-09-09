@@ -1,0 +1,31 @@
+{
+  "id": "plate_simple",
+  "prompt": "Design a rectangular spacer plate in OpenSCAD. It is 60 mm long in X, 40 mm wide in Y and 5 mm thick in Z, with no holes or features. Put one corner at the origin so the part occupies the positive octant.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        60,
+        40,
+        5
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 12000.0,
+      "tol_pct": 1
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

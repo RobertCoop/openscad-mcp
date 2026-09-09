@@ -1,0 +1,41 @@
+{
+  "id": "hollow_enclosure",
+  "prompt": "Design a completely sealed hollow enclosure in OpenSCAD: a 50 x 40 x 30 mm box centred on the origin with 2.5 mm walls on all six sides, so the void inside is fully enclosed and there is no opening. Store the wall thickness in a variable named wall.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox",
+      "expected": [
+        50,
+        40,
+        30
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "volume",
+      "expected": 20625.0,
+      "tol_pct": 1
+    },
+    {
+      "type": "watertight"
+    },
+    {
+      "type": "solid_count",
+      "expected": 1
+    },
+    {
+      "type": "cavity_count",
+      "expected": 1
+    },
+    {
+      "type": "predicate",
+      "scad": "wall",
+      "expected": 2.5,
+      "tol_mm": 0.01
+    }
+  ],
+  "tags": [
+    "single-part"
+  ]
+}

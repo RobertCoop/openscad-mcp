@@ -100,13 +100,15 @@ uv run openscad-mcp
 
 ## Available Tools
 
+Every tool response carries `errors`, `warnings` and `hints` parsed from
+OpenSCAD's output. Check them: OpenSCAD exits 0 on a failed `assert()` or an
+unknown module and draws a blank scene.
+
 ### Rendering
 
 | Tool | Description |
 |------|-------------|
-| `render_single` | Render a single view with camera control, quality presets, and view presets |
-| `render_perspectives` | Render multiple standard views (front, back, left, right, top, bottom, isometric) in parallel |
-| `compare_renders` | Side-by-side before/after renders for visual comparison |
+| `render` | Images with a text digest before each one (camera, view direction, scale, bbox). `mode=views` (one image per view, or a custom camera), `mode=section` (exact cross-section with a scale bar), `mode=parts` (each part in its own colour, `isolate` ghosts the rest), `mode=compare` (before/after). `grounded=true` gives an orthographic view with a stated mm/px scale; `annotate=true` adds a scale bar, axis triad and bbox dimensions |
 
 ### Export & Model Management
 
@@ -119,14 +121,16 @@ uv run openscad-mcp
 | `list_models` | List all models in the workspace |
 | `delete_model` | Delete a model file |
 
-### Analysis & Validation
+### Measurement & Validation
 
 | Tool | Description |
 |------|-------------|
-| `validate_scad` | Syntax-check code without a full render (errors, warnings, echo output) |
-| `analyze_model` | Compute bounding box, dimensions, and triangle count via STL export |
+| `measure` | Exact numbers from the exported geometry: bbox, dimensions, volume, surface area, solid and cavity counts, watertightness, `mesh_health`. `mode=parts` measures each part of an assembly, `mode=section` returns cut contours with area, `mode=mass` adds grams for a material. Accepts an existing STL/SVG via `mesh` |
+| `validate` | `mode=syntax` (parse and evaluate, no geometry), `mode=geometry` (mesh findings: open edges, non-manifold, several solids, cavities), `mode=predicates` (assert `["W > 10", "H == 2*W"]` in the model's scope), `mode=includes` (every include/use/import resolved or not) |
+| `scad_eval` | Evaluate expressions in a model's variable scope and get typed values (number, vector, string, bool, range, undef) |
+| `reference` | Sourced engineering data with confidence labels: fits and clearances, metric fasteners, heat-set inserts, bearings, magnets, joints, FDM design rules, materials, OpenSCAD cheatsheet, conventions |
 | `get_libraries` | Discover installed OpenSCAD libraries |
-| `check_openscad` | Verify OpenSCAD installation and version |
+| `check_openscad` | Verify OpenSCAD installation, version and capabilities |
 
 ### Project Support
 
@@ -140,28 +144,45 @@ uv run openscad-mcp
 Once connected, ask your AI assistant:
 
 - *"Render a cube with rounded edges"*
-- *"Show me this model from all angles"*
-- *"Export my gear model to STL"*
+- *"Show me the front and top of this model with a scale bar"*
+- *"What is the volume and are there any cavities?"*
+- *"Cut a section through the lid at z = 12 and tell me the wall thickness"*
+- *"Colour the body and lid differently and ghost the body"*
+- *"What clearance should I use for an M3 screw and a press-fit 608 bearing?"*
 - *"Compare the model before and after changing the radius to 15"*
-- *"Validate this OpenSCAD code for errors"*
-- *"What are the dimensions of this model?"*
+- *"Export my gear model to STL"*
+
+The server also publishes MCP resources (`openscad://conventions`,
+`openscad://cheatsheet`, `openscad://reference/{topic}`) and server
+instructions with the coordinate and assembly conventions it expects. A
+Claude Code skill lives in `skills/openscad-design/SKILL.md` and the repo can
+be installed as a Claude Code plugin (`.claude-plugin/`).
 
 ### Tool Parameters
 
-#### `render_single`
+#### `render`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `scad_content` | string | — | OpenSCAD code to render* |
 | `scad_file` | string | — | Path to `.scad` file* |
-| `view` | string | — | Preset view: `front`, `back`, `left`, `right`, `top`, `bottom`, `isometric`, `dimetric` |
-| `camera_position` | list/string | `[70,70,70]` | Camera eye position `[x,y,z]` |
-| `camera_target` | list/string | `[0,0,0]` | Camera look-at point |
-| `image_size` | list/string | `[800,600]` | Output dimensions `[w,h]` or `"800x600"` |
+| `mode` | string | `views` | `views`, `section`, `parts`, `compare` |
+| `views` | list | `["isometric"]` | Any of `front`, `back`, `left`, `right`, `top`, `bottom`, `isometric`, `dimetric` |
+| `camera_position` / `camera_target` / `camera_up` | list/string | — | Custom camera (used when `views` is omitted) |
+| `grounded` | bool | `false` | Measure the model, then render orthographically with a stated mm/px scale |
+| `annotate` | bool | `false` | Scale bar, axis triad, bbox dimensions (implies `grounded`) |
+| `section_axis` / `section_offset` | string / number | `z` / `0` | Cut plane for `mode=section` |
+| `parts` / `isolate` | list / string | — | `[{"name": "lid", "code": "lid();"}]` for `mode=parts` |
+| `variables_after` / `scad_content_after` | dict / string | — | The "after" side for `mode=compare` |
+| `image_size` | list/string | `[800,600]` | Output dimensions, clamped to 1568 px |
 | `color_scheme` | string | `Cornfield` | OpenSCAD color scheme |
-| `variables` | dict | `{}` | OpenSCAD `-D` variables |
+| `variables` | dict | `{}` | OpenSCAD variables |
 | `quality` | string | — | `draft`, `normal`, or `high` |
 | `include_paths` | list | — | Extra include directories (via `OPENSCADPATH`) |
+
+Each image costs roughly 640 vision tokens at 800x600; ask for the views that
+answer a question rather than all of them. Auto-fit renders (`grounded=false`)
+have no recoverable absolute scale, which the digest states.
 
 *Exactly one of `scad_content` or `scad_file` must be provided.
 

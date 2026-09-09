@@ -506,11 +506,11 @@ class TestIntegration:
     """Integration tests for complete workflows."""
     
     @pytest.mark.asyncio
-    async def test_render_single_with_flexible_params(self):
-        """Test render_single with all flexible parameter formats."""
-        from openscad_mcp.server import render_single
+    async def test_render_with_flexible_params(self):
+        """Test render with all flexible parameter formats."""
+        from openscad_mcp.server import render
         # Access underlying function (FastMCP wraps it as FunctionTool)
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "AAAA"
@@ -523,27 +523,26 @@ class TestIntegration:
                 camera_up=None,  # Use default
                 image_size="1024x768",  # String format
                 variables="x=10,y=20",  # Key=value format
-                auto_center=True
             )
-            
-            # Result is now a list: [MCPImage(...), '{"success": true, ...}']
+
+            # Result is a list: [digest, MCPImage(...), '{"success": true, ...}']
             assert isinstance(result, list)
-            assert len(result) == 2
-            assert isinstance(result[0], MCPImage)
+            assert len(result) == 3
+            assert isinstance(result[1], MCPImage)
             metadata = json.loads(result[-1])
             assert metadata["success"] is True
-            
+
             # Verify parameters were parsed correctly
-            call_args = mock_render.call_args[0]
-            assert call_args[2] == [10.0, 20.0, 30.0]  # camera_position
-            assert call_args[3] == [0, 0, 0]  # camera_target
-            assert call_args[5] == [1024, 768]  # image_size
-    
+            call_kwargs = mock_render.call_args.kwargs
+            assert call_kwargs["camera_position"] == [10.0, 20.0, 30.0]
+            assert call_kwargs["camera_target"] == [0, 0, 0]
+            assert call_kwargs["image_size"] == [1024, 768]
+
     @pytest.mark.asyncio
-    async def test_render_single_with_view_keywords(self):
-        """Test render_single with view keyword parameter."""
-        from openscad_mcp.server import render_single
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+    async def test_render_with_view_keywords(self):
+        """Test render with the views parameter."""
+        from openscad_mcp.server import render
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "AAAA"
@@ -552,48 +551,50 @@ class TestIntegration:
             for view_name in ["front", "top", "isometric"]:
                 result = await render_fn(
                     scad_content="sphere(10);",
-                    view=view_name,
+                    views=[view_name],
                     image_size=[800, 600],
                     variables={"radius": 10},
                 )
-                
-                # Result is now a list: [MCPImage(...), '{"success": true, ...}']
+
+                # Result is a list: [digest, MCPImage(...), '{"success": true, ...}']
                 assert isinstance(result, list)
-                assert len(result) == 2
-                assert isinstance(result[0], MCPImage)
+                assert len(result) == 3
+                assert isinstance(result[1], MCPImage)
                 metadata = json.loads(result[-1])
                 assert metadata["success"] is True
-    
+                assert metadata["views"] == [view_name]
+
     @pytest.mark.asyncio
-    async def test_render_single_returns_list_with_image(self):
-        """Test that render_single returns a list with MCPImage and metadata."""
-        from openscad_mcp.server import render_single
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+    async def test_render_returns_list_with_image(self):
+        """Test that render returns a list with MCPImage and metadata."""
+        from openscad_mcp.server import render
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "AAAA"
 
             result = await render_fn(scad_content="cube(5);")
 
-            # Result is a list: [MCPImage(...), '{"success": true, ...}']
+            # Result is a list: [digest, MCPImage(...), '{"success": true, ...}']
             assert isinstance(result, list)
-            assert len(result) == 2
-            assert isinstance(result[0], MCPImage)
+            assert len(result) == 3
+            assert isinstance(result[0], str)
+            assert isinstance(result[1], MCPImage)
             metadata = json.loads(result[-1])
             assert metadata["success"] is True
 
     @pytest.mark.asyncio
-    async def test_render_single_error_returns_list(self):
-        """Test that render_single error returns a list with JSON error metadata."""
-        from openscad_mcp.server import render_single
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+    async def test_render_error_returns_list(self):
+        """Test that a failed render returns a list with JSON error metadata."""
+        from openscad_mcp.server import render
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.side_effect = RuntimeError("OpenSCAD crashed")
 
             result = await render_fn(
                 scad_content="complex_model();",
-                view="isometric"
+                views=["isometric"]
             )
 
             # Error result is a list with a single JSON string
@@ -601,8 +602,7 @@ class TestIntegration:
             assert len(result) == 1
             metadata = json.loads(result[0])
             assert metadata["success"] is False
-            assert "OpenSCAD crashed" in metadata["error"]
-            assert "operation_id" in metadata
+            assert "OpenSCAD crashed" in metadata["failed_views"]["isometric"]
 
     
     def test_backward_compatibility(self):
@@ -652,15 +652,19 @@ class TestErrorHandling:
     
     @pytest.mark.asyncio
     async def test_render_missing_input(self):
-        """Test render functions with missing required input."""
-        from openscad_mcp.server import render_single
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+        """Test render with missing or ambiguous required input."""
+        from openscad_mcp.server import render
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
-        with pytest.raises(ValueError, match="Exactly one of scad_content or scad_file"):
-            await render_fn()  # Missing both
+        missing = json.loads((await render_fn())[0])  # Missing both
+        assert missing["success"] is False
+        assert "Exactly one of scad_content or scad_file" in missing["error"]
 
-        with pytest.raises(ValueError, match="Exactly one of scad_content or scad_file"):
-            await render_fn(scad_content="cube();", scad_file="file.scad")  # Both
+        both = json.loads(
+            (await render_fn(scad_content="cube();", scad_file="file.scad"))[0]
+        )
+        assert both["success"] is False
+        assert "Exactly one of scad_content or scad_file" in both["error"]
 
 
 # ============================================================================

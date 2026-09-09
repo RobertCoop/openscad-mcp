@@ -366,8 +366,12 @@ def reset_environment(monkeypatch):
 
     # Forget any discovered OpenSCAD binary: discovery is memoised, and tests
     # patch subprocess.run to simulate different installations.
-    from openscad_mcp.server import _reset_openscad_cache
+    from openscad_mcp.server import _measure_cache, _reset_openscad_cache
     _reset_openscad_cache()
+
+    # Forget measured geometry: the key is content + variables + binary, so two
+    # tests rendering the same source with different subprocess mocks collide.
+    _measure_cache.clear()
 
     # Ensure clean temp directory
     import tempfile

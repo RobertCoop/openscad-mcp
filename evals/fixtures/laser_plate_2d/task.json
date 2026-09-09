@@ -1,0 +1,29 @@
+{
+  "id": "laser_plate_2d",
+  "prompt": "Design a flat laser-cut plate in OpenSCAD as a 2D profile only; do not extrude it, because it will be exported to SVG. The outline is a 120 x 80 mm rectangle with its corner at the origin. Cut four 5 mm mounting holes 10 mm in from each edge, at X = 10 and X = 110, Y = 10 and Y = 70, and a 40 x 20 mm rectangular window centred in the plate. Use $fn = 64 for the holes and store the hole diameter in a variable named hole_d.",
+  "reference_scad": "reference.scad",
+  "checks": [
+    {
+      "type": "bbox_2d",
+      "expected": [
+        120,
+        80
+      ],
+      "tol_mm": 0.2
+    },
+    {
+      "type": "area_2d",
+      "expected": 8721.6,
+      "tol_pct": 2
+    },
+    {
+      "type": "predicate",
+      "scad": "hole_d",
+      "expected": 5.0,
+      "tol_mm": 0.05
+    }
+  ],
+  "tags": [
+    "2d"
+  ]
+}

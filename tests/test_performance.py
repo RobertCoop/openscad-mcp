@@ -344,9 +344,9 @@ class TestAsyncPerformance:
     
     async def test_concurrent_renders(self):
         """Test concurrent render operations."""
-        from openscad_mcp.server import render_single
+        from openscad_mcp.server import render
 
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             mock_render.return_value = "AAAA"
@@ -366,7 +366,7 @@ class TestAsyncPerformance:
             elapsed = time.perf_counter() - start
 
             assert len(results) == 10
-            # render_single returns a list; metadata is a JSON string as the last element
+            # render returns a list; metadata is a JSON string as the last element
             for r in results:
                 assert isinstance(r, list)
                 metadata = json.loads(r[-1])
@@ -375,20 +375,20 @@ class TestAsyncPerformance:
 
     async def test_render_queue_performance(self):
         """Test performance with queued renders."""
-        from openscad_mcp.server import render_single
+        from openscad_mcp.server import render
 
-        render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single
+        render_fn = render.fn if hasattr(render, 'fn') else render
 
         with patch('openscad_mcp.server.render_scad_to_png') as mock_render:
             # Simulate varying render times
-            mock_render.side_effect = lambda *args: "AAAA"
+            mock_render.side_effect = lambda *args, **kwargs: "AAAA"
 
             tasks = []
             views = ["front", "top", "isometric", "left", "right"]
             for i, view in enumerate(views):
                 task = render_fn(
                     scad_content=f"sphere({i*5});",
-                    view=view
+                    views=[view]
                 )
                 tasks.append(task)
 
