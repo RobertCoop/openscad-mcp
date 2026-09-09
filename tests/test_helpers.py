@@ -344,7 +344,8 @@ class TestParseOpenscadStderr:
     def test_error_without_colon(self):
         """Lines starting with ERROR (no colon) still end up in errors."""
         result = _parse_openscad_stderr("ERROR something went wrong\n")
-        assert "ERROR something went wrong" in result["errors"]
+        assert len(result["errors"]) == 1
+        assert "something went wrong" in result["errors"][0]
 
 
 # ============================================================================
@@ -497,7 +498,9 @@ class TestCacheKeyAndGaps:
         result = _check_cache(cache_key)
 
         assert result is not None
-        assert base64.b64decode(result) == image_bytes
+        cached_b64, manifest = result
+        assert base64.b64decode(cached_b64) == image_bytes
+        assert manifest["dependencies"] == []
 
 
 # ============================================================================

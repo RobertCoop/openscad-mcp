@@ -36,20 +36,33 @@ class RenderingConfig(BaseModel):
         description="Render timeout in seconds",
     )
     max_image_width: int = Field(
-        4096,
+        1568,
         ge=100,
         le=8192,
-        description="Maximum image width",
+        description=(
+            "Maximum image width. Requested sizes are clamped to this, "
+            "preserving aspect ratio. 1568 px is the long-edge limit "
+            "above which vision models downscale the image anyway."
+        ),
     )
     max_image_height: int = Field(
-        4096,
+        1568,
         ge=100,
         le=8192,
-        description="Maximum image height",
+        description="Maximum image height (see max_image_width)",
     )
     default_color_scheme: str = Field(
         "Cornfield",
         description="Default OpenSCAD color scheme",
+    )
+    hard_warnings: bool = Field(
+        False,
+        description=(
+            "Pass --hardwarnings to OpenSCAD. Off by default: the flag stops "
+            "evaluation at the first warning while still exiting 0, which "
+            "silently truncates echo output and blanks renders. Warnings are "
+            "surfaced through structured diagnostics instead."
+        ),
     )
 
 
@@ -106,7 +119,23 @@ class SecurityConfig(BaseModel):
     )
     allowed_paths: Optional[list[str]] = Field(
         None,
-        description="Allowed paths for file access",
+        description=(
+            "Directories the server may read .scad files and their "
+            "dependencies from. None disables path validation entirely "
+            "(a warning is logged at startup). Also settable via the "
+            "MCP_ALLOWED_PATHS environment variable (os.pathsep-separated)."
+        ),
+    )
+    max_memory_mb: int = Field(
+        4096,
+        ge=0,
+        le=1_000_000,
+        description=(
+            "Address-space limit (RLIMIT_AS) applied to each OpenSCAD "
+            "subprocess on POSIX hosts via an exec wrapper. 0 disables it. "
+            "OpenSCAD has no memory ceiling of its own; a small minkowski() "
+            "can grow until the host is out of memory."
+        ),
     )
 
 
@@ -249,6 +278,8 @@ class Config(BaseModel):
             rendering_config["max_image_width"] = int(max_width)
         if max_height := os.getenv("MCP_MAX_IMAGE_HEIGHT"):
             rendering_config["max_image_height"] = int(max_height)
+        if hard_warnings := os.getenv("MCP_HARD_WARNINGS"):
+            rendering_config["hard_warnings"] = hard_warnings.lower() == "true"
         if rendering_config:
             config_dict["rendering"] = RenderingConfig(**rendering_config)
 
@@ -269,6 +300,12 @@ class Config(BaseModel):
             security_config["rate_limit"] = int(rate_limit)
         if max_file_size := os.getenv("MCP_MAX_FILE_SIZE_MB"):
             security_config["max_file_size_mb"] = int(max_file_size)
+        if allowed := os.getenv("MCP_ALLOWED_PATHS"):
+            security_config["allowed_paths"] = [
+                p.strip() for p in allowed.split(os.pathsep) if p.strip()
+            ]
+        if max_memory := os.getenv("MCP_MAX_MEMORY_MB"):
+            security_config["max_memory_mb"] = int(max_memory)
         if security_config:
             config_dict["security"] = SecurityConfig(**security_config)
 
@@ -351,22 +388,29 @@ def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
 # Initialized lazily via get_render_semaphore() so that the semaphore is
 # created inside a running event loop and respects the configured max_concurrent.
 _render_semaphore: Optional[asyncio.Semaphore] = None
+_render_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def get_render_semaphore() -> asyncio.Semaphore:
-    """Return the module-level rendering concurrency semaphore.
+    """Return the rendering concurrency semaphore for the running event loop.
 
     Creates the semaphore on first call, using the current global config's
-    ``rendering.max_concurrent`` value. The semaphore is cached for the
-    lifetime of the process.
+    ``rendering.max_concurrent`` value. An asyncio primitive binds to the
+    loop it is first contended on, so a new semaphore is created whenever
+    the running loop changes (test runners create a loop per test).
 
     Returns:
-        An asyncio.Semaphore that limits concurrent rendering operations.
+        An asyncio.Semaphore that limits concurrent OpenSCAD subprocesses.
     """
-    global _render_semaphore
-    if _render_semaphore is None:
+    global _render_semaphore, _render_semaphore_loop
+    try:
+        loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _render_semaphore is None or _render_semaphore_loop is not loop:
         config = get_config()
         _render_semaphore = asyncio.Semaphore(config.rendering.max_concurrent)
+        _render_semaphore_loop = loop
     return _render_semaphore
 
 
@@ -394,7 +438,8 @@ def set_config(config: Config) -> None:
     Args:
         config: Config instance to set globally
     """
-    global _config, _render_semaphore
+    global _config, _render_semaphore, _render_semaphore_loop
     _config = config
     # Reset semaphore so it picks up the new max_concurrent on next access
     _render_semaphore = None
+    _render_semaphore_loop = None

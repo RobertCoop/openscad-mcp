@@ -775,8 +775,13 @@ class TestRenderScadToPngCommand:
         assert "enabled=true" in d_flags["enabled"]
         assert "ratio=3.14" in d_flags["ratio"]
 
-    def test_hardwarnings_included(self):
-        """Test that --hardwarnings is included in the command."""
+    def test_hardwarnings_off_by_default(self):
+        """--hardwarnings is not passed unless configured.
+
+        On 2021.01 the flag stops evaluation at the first WARNING while still
+        exiting 0, which blanks the render and truncates echo output without
+        any indication. Warnings reach the model through diagnostics instead.
+        """
         from openscad_mcp.server import render_scad_to_png
 
         captured_cmd = {}
@@ -793,7 +798,36 @@ class TestRenderScadToPngCommand:
             render_scad_to_png(scad_content="cube(10);")
 
         cmd = captured_cmd["cmd"]
-        assert "--hardwarnings" in cmd
+        assert "--hardwarnings" not in cmd
+        # The dependency list is always requested so the cache can be validated
+        assert "-d" in cmd
+
+    def test_hardwarnings_when_configured(self):
+        """rendering.hard_warnings=True restores the flag."""
+        from openscad_mcp.server import render_scad_to_png
+        from openscad_mcp.utils.config import (
+            CacheConfig, Config, RenderingConfig, set_config,
+        )
+
+        set_config(Config(
+            temp_dir=self._tmp_path,
+            cache=CacheConfig(enabled=False, directory=self._tmp_path / "cache"),
+            rendering=RenderingConfig(hard_warnings=True),
+        ))
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            render_scad_to_png(scad_content="cube(10);")
+
+        assert "--hardwarnings" in captured_cmd["cmd"]
 
     def test_imgsize_format(self):
         """Test that --imgsize is properly formatted as 'W,H'."""
@@ -812,12 +846,37 @@ class TestRenderScadToPngCommand:
         with patch("subprocess.run", side_effect=mock_run):
             render_scad_to_png(
                 scad_content="cube(10);",
-                image_size=[1920, 1080],
+                image_size=[1200, 900],
             )
 
         cmd = captured_cmd["cmd"]
         imgsize_idx = cmd.index("--imgsize")
-        assert cmd[imgsize_idx + 1] == "1920,1080"
+        assert cmd[imgsize_idx + 1] == "1200,900"
+
+    def test_imgsize_clamped_to_configured_maximum(self):
+        """Oversized requests are clamped, preserving aspect ratio."""
+        from openscad_mcp.server import render_scad_to_png
+
+        captured_cmd = {}
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            for i, arg in enumerate(cmd):
+                if arg == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cmd[i + 1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            return self._make_mock_result(None)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = render_scad_to_png(
+                scad_content="cube(10);",
+                image_size=[4000, 3000],
+            )
+
+        cmd = captured_cmd["cmd"]
+        imgsize_idx = cmd.index("--imgsize")
+        assert cmd[imgsize_idx + 1] == "1568,1176"
+        assert result.image_size == [1568, 1176]
 
     def test_temp_files_cleaned_up(self):
         """Test that temporary files are cleaned up after rendering."""
@@ -1011,7 +1070,7 @@ class TestSecurityValidations:
         with patch("subprocess.run", side_effect=mock_run):
             # This should NOT raise ValueError about allowed paths
             result = render_scad_to_png(scad_file=str(scad_file))
-            assert isinstance(result, str)  # base64 string
+            assert isinstance(result.image_b64, str)  # base64 string
 
     def test_variable_name_injection_rejected(self):
         """Test that variable names with special characters are rejected.
@@ -1069,7 +1128,7 @@ class TestSecurityValidations:
                     scad_content="cube(10);",
                     variables={name: 42},
                 )
-                assert isinstance(result, str)
+                assert isinstance(result.image_b64, str)
 
     def test_oversized_scad_content_rejected(self):
         """Test that scad_content exceeding max_file_size_mb is rejected.
@@ -1109,7 +1168,7 @@ class TestSecurityValidations:
 
         with patch("subprocess.run", side_effect=mock_run):
             result = render_scad_to_png(scad_content=small_content)
-            assert isinstance(result, str)
+            assert isinstance(result.image_b64, str)
 
     def test_no_path_restriction_without_allowed_paths(self):
         """Test that any path is accepted when allowed_paths is None (default)."""

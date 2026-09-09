@@ -185,6 +185,10 @@ All parameter parsers accept multiple input formats (JSON strings, lists, dicts,
 | `MCP_CACHE_TTL_HOURS` | Cache TTL in hours | `24` |
 | `MCP_LOG_LEVEL` | Logging level | `INFO` |
 | `MCP_MAX_FILE_SIZE_MB` | Max SCAD file size | `10` |
+| `MCP_ALLOWED_PATHS` | Directories scripts may read from (`os.pathsep`-separated) | unset = no validation |
+| `MCP_MAX_MEMORY_MB` | Address-space limit per OpenSCAD process (POSIX), `0` disables | `4096` |
+| `MCP_MAX_IMAGE_WIDTH` / `MCP_MAX_IMAGE_HEIGHT` | Render size clamp (aspect preserved) | `1568` |
+| `MCP_HARD_WARNINGS` | Pass `--hardwarnings` to OpenSCAD (see Security) | `false` |
 
 ### YAML Configuration
 
@@ -209,16 +213,54 @@ cache:
 security:
   rate_limit: 60
   max_file_size_mb: 10
-  allowed_paths: null  # null = no restrictions
+  allowed_paths:          # null = no path validation at all (a warning is logged)
+    - /home/me/projects/parts
+  max_memory_mb: 4096
 ```
 
 ## Security
 
-- **Path validation**: `scad_file` and `include_paths` validated against configurable `allowed_paths`
-- **File size limits**: Content checked against `max_file_size_mb`
-- **Variable name validation**: Only `^[a-zA-Z_][a-zA-Z0-9_]*$` allowed (prevents injection)
-- **Subprocess timeout**: Configurable, default 300s
-- **Model name validation**: Alphanumeric, hyphens, and underscores only; no path traversal
+### Threat model
+
+The server runs OpenSCAD on source it is handed. OpenSCAD can read any file
+the process can read, through `include <>`, `use <>`, `import()` and
+`surface()`, and can return what it read as echo output or as geometry. The
+guarantees below hold **only when `allowed_paths` is configured**. Out of the
+box it is unset, no path validation is performed, and the server logs a
+warning at startup saying so.
+
+What is enforced:
+
+- **Path validation on arguments**: `scad_file`, `include_paths` (in every
+  tool) and export `output_path` must lie inside `allowed_paths`. Containment
+  uses resolved paths, so symlinks and `..` cannot escape.
+- **Path validation on the dependency closure**: every file OpenSCAD actually
+  read is recorded with `-d` and checked after the run. If any lies outside
+  `allowed_paths`, the standard library directories, or the server temp dir,
+  the output (image, mesh, echo text) is withheld and the call fails. This
+  closes the `include <...>`-as-data and `surface(file=...)` channels.
+- **Memory ceiling**: each OpenSCAD process runs under `RLIMIT_AS`
+  (`max_memory_mb`, default 4 GB) on POSIX hosts. OpenSCAD has no ceiling of
+  its own; a small `minkowski()` can otherwise consume all host memory.
+- **Timeout**: `timeout_seconds`, default 300 s; partial stderr is kept.
+- **Echo channel bounds**: `echo_output` is capped (200 lines, 2000 chars
+  per line) and labelled as untrusted content from the rendered file.
+- **File size limits**, **variable name validation**
+  (`^\$?[a-zA-Z_][a-zA-Z0-9_]*$`) and **model name validation** (no path
+  traversal) as before.
+
+What is not enforced: no OS-level sandbox (no network isolation, no
+filesystem namespace). For untrusted input run the server inside a
+container or under Landlock/bubblewrap with only the project directory
+mounted.
+
+### Why `--hardwarnings` is off
+
+`--hardwarnings` stops OpenSCAD at the first warning but still exits 0, so
+it produced blank renders and silently truncated `echo_output` with no
+indication. Warnings now reach the assistant through the structured
+`warnings`, `errors` and `hints` fields on every tool response instead.
+Set `MCP_HARD_WARNINGS=true` to restore the flag.
 
 ## Development
 

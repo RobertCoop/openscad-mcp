@@ -509,7 +509,12 @@ class TestValidateScad:
         assert output_target in ("/dev/null", "NUL")
 
     async def test_hardwarnings_flag(self, configured_env, mock_subprocess_success):
-        """The validate command should include --hardwarnings flag."""
+        """The validate command must not pass --hardwarnings.
+
+        With the flag, OpenSCAD 2021.01 stops evaluating at the first
+        WARNING but still exits 0, so validate_scad reported valid=true with
+        a silently truncated echo_output.
+        """
         captured_cmds = []
 
         def capturing_mock(cmd, **kwargs):
@@ -527,7 +532,8 @@ class TestValidateScad:
             await validate_scad_fn(scad_content="cube(10);")
 
         assert len(captured_cmds) == 1
-        assert "--hardwarnings" in captured_cmds[0]
+        assert "--hardwarnings" not in captured_cmds[0]
+        assert "--export-format=csg" in captured_cmds[0]
 
 
 # ============================================================================

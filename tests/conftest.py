@@ -364,6 +364,11 @@ def reset_environment(monkeypatch):
     # Reset the global config singleton so tests don't get stale cached config
     set_config(None)
 
+    # Forget any discovered OpenSCAD binary: discovery is memoised, and tests
+    # patch subprocess.run to simulate different installations.
+    from openscad_mcp.server import _reset_openscad_cache
+    _reset_openscad_cache()
+
     # Ensure clean temp directory
     import tempfile
     import shutil

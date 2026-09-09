@@ -190,3 +190,6 @@ temp/
 test_output/
 # Claude Code / Impeccable local caches
 .impeccable/
+
+# Local research notes (not published)
+docs/research/

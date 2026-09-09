@@ -8,22 +8,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Placeholder for upcoming features
+- Structured diagnostics on every tool response: `errors`, `warnings`,
+  `deprecated`, `echo_output`, and `hints` (repair advice keyed to the
+  message OpenSCAD printed), with file/line locations and TRACE call stacks
+  folded into the record they belong to. Temp paths for inline content are
+  shown as `<inline>`. (`src/openscad_mcp/diagnostics.py`)
+- `mesh_health` on `export_model` (mesh formats) and `analyze_model`, parsed
+  from the CGAL statistics OpenSCAD already prints: `manifold`
+  true/false/null, vertex/edge/facet counts and `nef_volumes`.
+- `export_model` accepts `csg`, `nef3` and `pdf`; `amf` is refused on
+  binaries that removed it.
+- `check_openscad` returns a cached capability record (version, snapshot
+  flag, feature gates, supported formats, library paths) and an upgrade
+  hint on 2021.01.
+- `image_tokens` and `cached` in render metadata; `image_size` requests are
+  clamped to `rendering.max_image_width/height` (default 1568, the vision
+  long-edge limit) preserving aspect ratio.
+- Config: `security.max_memory_mb` (default 4096), `MCP_ALLOWED_PATHS`,
+  `MCP_MAX_MEMORY_MB`, `rendering.hard_warnings` / `MCP_HARD_WARNINGS`.
+- A tool-surface budget test (`tests/test_correctness_fixes.py`) so schema
+  growth is caught in CI.
 
 ### Changed
-- Placeholder for upcoming changes
-
-### Deprecated
-- Placeholder for deprecated features
-
-### Removed
-- Placeholder for removed features
+- `render_scad_to_png` returns a `RenderResult` (image + diagnostics +
+  dependency and cache info) instead of a bare base64 string. Tools still
+  accept a bare string from mocks.
+- `render_perspectives` renders three views by default (front, top,
+  isometric) instead of seven; every view is still available on request.
+- `render_single` auto-frames (`--autocenter --viewall`) when called with
+  no `view` and no explicit camera. A 2x3x1 mm part used to fill 0.2% of
+  the frame.
+- `--hardwarnings` is no longer passed by default. It stops evaluation at
+  the first warning while still exiting 0, which produced blank renders and
+  silently truncated `echo_output`. Warnings now arrive through diagnostics.
+  Set `rendering.hard_warnings: true` to restore it.
+- OpenSCAD discovery is memoised, checks `openscad-nightly` names and
+  paths, reads the version from stdout or stderr, and prefers the newest
+  binary. Previously every render re-executed `openscad --version`, even
+  on cache hits.
+- `rendering.max_concurrent` is now enforced: all OpenSCAD subprocesses go
+  through the render semaphore, which was defined but never used.
+- Startup messages go to the logger, never stdout (the stdio JSON-RPC
+  channel).
 
 ### Fixed
-- Placeholder for bug fixes
+- Renders reported `success: true` with a blank image when OpenSCAD exited
+  0 after a failed `assert()`, an unknown module, or a missing include.
+  stderr was only read on non-zero exit. Success is now derived from the
+  parsed diagnostics and the image is returned alongside the errors.
+- The render cache ignored files pulled in via `include <>`, `use <>`,
+  `import()` and `surface()`: editing `params.scad` returned the previous
+  PNG for up to 24 hours. Each cache entry now carries a manifest of every
+  dependency (from `openscad -d`) with size, mtime and sha256, checked on
+  lookup; includes that were missing at render time invalidate the entry
+  when they appear; renders whose inputs changed mid-run are not cached.
+  Entries without a manifest are treated as misses. The cache key also
+  covers the OpenSCAD binary identity and uses length-prefixed fields.
+- `resource://server/info` raised `TypeError: 'FunctionTool' object is not
+  callable` on every read.
+- `clear_cache` left manifest files behind and eviction ignored them.
+- `get_project_files` dependency extraction missed `include` lines with
+  trailing comments, several statements on one line, `import()` and
+  `surface()`.
+- `export_model` and `analyze_model` discarded stderr on success, losing
+  the manifold warnings OpenSCAD printed.
+- Timeouts discarded the partial stderr OpenSCAD had produced.
+- The rendering semaphore was bound to the first event loop it saw.
 
 ### Security
-- Placeholder for security updates
+- `allowed_paths` was enforced only on the `scad_file` argument (and on
+  `include_paths` in the render path alone). Inline `scad_content` could
+  read any readable numeric file via `include <...>` and return it through
+  `echo_output`, or via `surface(file=...)` as geometry. Every OpenSCAD run
+  now records its dependency closure with `-d` and withholds all output if
+  any file lies outside `allowed_paths`, the library directories, or the
+  temp dir. `include_paths` is validated in all four tools and export
+  `output_path` must also be inside `allowed_paths`.
+- OpenSCAD subprocesses run under an address-space limit
+  (`security.max_memory_mb`, default 4 GB) applied through an exec wrapper
+  on POSIX hosts, and in a new session.
+- `echo_output` is capped (200 lines, 2000 chars per line).
+- A startup warning is logged when `allowed_paths` is unset, and the
+  README now documents the threat model.
 
 ## [0.3.0] - 2026-08-05
 

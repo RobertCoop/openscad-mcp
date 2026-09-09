@@ -194,13 +194,18 @@ class TestRenderPerspectives:
         self.fn = _unwrap(render_perspectives)
 
     async def test_default_views(self):
-        """Default views renders all 7 standard perspectives."""
+        """Default renders three views (front, top, isometric), not all eight.
+
+        Every 800x600 image costs roughly 640 vision tokens; the old
+        seven-view default was ~4500 tokens per call.
+        """
         with patch("openscad_mcp.server.render_scad_to_png", return_value=FAKE_B64):
             result = await self.fn(scad_content="cube(10);")
 
         metadata = _parse_metadata(result)
         assert metadata["success"] is True
-        assert metadata["count"] == 7
+        assert metadata["count"] == 3
+        assert metadata["views"] == ["front", "top", "isometric"]
 
     async def test_custom_view_list(self):
         """Custom views list renders only the requested perspectives."""
@@ -274,8 +279,9 @@ class TestRenderPerspectives:
         metadata = _parse_metadata(result)
         # One succeeds, one fails
         assert metadata["count"] == 1
-        assert metadata["errors"] is not None
-        assert len(metadata["errors"]) == 1
+        assert metadata["failed_views"] is not None
+        assert len(metadata["failed_views"]) == 1
+        assert metadata["success"] is False
 
     async def test_quality_preset(self):
         """Quality preset variables are forwarded to render calls."""

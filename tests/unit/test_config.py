@@ -39,9 +39,10 @@ class TestRenderingConfig:
 
         assert config.max_concurrent == 5
         assert config.timeout_seconds == 300
-        assert config.max_image_width == 4096
-        assert config.max_image_height == 4096
+        assert config.max_image_width == 1568
+        assert config.max_image_height == 1568
         assert config.default_color_scheme == "Cornfield"
+        assert config.hard_warnings is False
 
     @pytest.mark.unit
     @pytest.mark.config
