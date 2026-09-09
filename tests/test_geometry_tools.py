@@ -20,9 +20,11 @@ from openscad_mcp import server
 from openscad_mcp.utils.config import CacheConfig, Config, SecurityConfig, set_config
 from openscad_mcp.wrappers import (
     EVAL_MARKER,
+    build_wrapper,
     collect_eval_results,
     eval_wrapper,
     format_scad_value,
+    hoist_source,
     parse_echo_values,
     part_wrapper,
     parts_wrapper,
@@ -99,30 +101,49 @@ class TestWrappers:
         with pytest.raises(ValueError):
             section_transform("w", 0)
 
-    def test_section_wrapper_shape(self, tmp_path):
-        text = section_wrapper(tmp_path / "m.scad", "z", 1.5, {"W": 40})
-        assert "module __model()" in text
-        assert "include <" in text
+    def test_section_wrapper_shape(self):
+        text = section_wrapper("include <BOSL2/std.scad>\ncube(1);\n", "z", 1.5, {"W": 40}).text
+        assert text.startswith("include <BOSL2/std.scad>\nmodule __model()")
         assert "W = 40;" in text
         assert "projection(cut = true)" in text
 
-    def test_parts_wrapper_uses_root_modifier_and_ghosts(self, tmp_path):
+    def test_hoist_source(self):
+        src = (
+            "include <BOSL2/std.scad>\n"
+            "include <../config/c.scad> // trailing\n"
+            "use <h.scad>; W=10; /* include <no.scad> */\n"
+            "// use <also_no.scad>\n"
+            "/* block\n use <block_no.scad>\n*/\n"
+            "cube(W);\n"
+        )
+        header, body = hoist_source(src)
+        assert header == [
+            "include <BOSL2/std.scad>",
+            "include <../config/c.scad> // trailing",
+            "use <h.scad>",
+        ]
+        assert "W=10;" in body and "include <no.scad>" in body  # comment kept intact
+        assert len(body.splitlines()) == len(src.splitlines())  # line numbers stable
+        wrapped = build_wrapper(src, {"W": 5})
+        assert wrapped.rebase_line(wrapped.body_line_offset + 6) == 6
+
+    def test_parts_wrapper_uses_root_modifier_and_ghosts(self):
         text = parts_wrapper(
-            tmp_path / "m.scad",
+            "module body(){} module lid(){}\n",
             [{"name": "body", "code": "body()"}, {"name": "lid", "code": "lid();"}],
             ["#111111", "#222222"],
             isolate="lid",
-        )
+        ).text
         assert "!union()" in text
         assert '%color("#111111", 0.3) { body(); }' in text
         assert 'color("#222222") { lid(); }' in text
 
-    def test_part_wrapper(self, tmp_path):
-        text = part_wrapper(tmp_path / "m.scad", "lid()")
+    def test_part_wrapper(self):
+        text = part_wrapper("module lid(){}\n", "lid()").text
         assert "!union()" in text and "lid();" in text
 
-    def test_eval_wrapper(self, tmp_path):
-        text = eval_wrapper(tmp_path / "m.scad", ["W*2", "[W,H]"], {"W": 5})
+    def test_eval_wrapper(self):
+        text = eval_wrapper("W=1;\n", ["W*2", "[W,H]"], {"W": 5}).text
         assert f'echo("{EVAL_MARKER}", 0, (W*2));' in text
         assert "W = 5;" in text
 
@@ -147,7 +168,9 @@ class TestWrappers:
 
 class TestParsing:
     def test_parse_parts_forms(self):
-        assert server._parse_parts([{"name": "a", "code": "a();"}]) == [{"name": "a", "code": "a();"}]
+        assert server._parse_parts([{"name": "a", "code": "a();"}]) == [
+            {"name": "a", "code": "a();"}
+        ]
         assert server._parse_parts({"lid": "lid();"}) == [{"name": "lid", "code": "lid();"}]
         assert server._parse_parts(["body()"]) == [{"name": "body", "code": "body()"}]
         assert server._parse_parts('[{"name":"x","code":"x();"}]')[0]["name"] == "x"
@@ -190,12 +213,18 @@ class TestToolsMocked:
         stl = project / "cube.stl"
         # unit cube as ASCII STL
         faces = [
-            ((0, 0, 0), (1, 1, 0), (1, 0, 0)), ((0, 0, 0), (0, 1, 0), (1, 1, 0)),
-            ((0, 0, 1), (1, 0, 1), (1, 1, 1)), ((0, 0, 1), (1, 1, 1), (0, 1, 1)),
-            ((0, 0, 0), (1, 0, 0), (1, 0, 1)), ((0, 0, 0), (1, 0, 1), (0, 0, 1)),
-            ((0, 1, 0), (1, 1, 1), (1, 1, 0)), ((0, 1, 0), (0, 1, 1), (1, 1, 1)),
-            ((0, 0, 0), (0, 0, 1), (0, 1, 1)), ((0, 0, 0), (0, 1, 1), (0, 1, 0)),
-            ((1, 0, 0), (1, 1, 0), (1, 1, 1)), ((1, 0, 0), (1, 1, 1), (1, 0, 1)),
+            ((0, 0, 0), (1, 1, 0), (1, 0, 0)),
+            ((0, 0, 0), (0, 1, 0), (1, 1, 0)),
+            ((0, 0, 1), (1, 0, 1), (1, 1, 1)),
+            ((0, 0, 1), (1, 1, 1), (0, 1, 1)),
+            ((0, 0, 0), (1, 0, 0), (1, 0, 1)),
+            ((0, 0, 0), (1, 0, 1), (0, 0, 1)),
+            ((0, 1, 0), (1, 1, 1), (1, 1, 0)),
+            ((0, 1, 0), (0, 1, 1), (1, 1, 1)),
+            ((0, 0, 0), (0, 0, 1), (0, 1, 1)),
+            ((0, 0, 0), (0, 1, 1), (0, 1, 0)),
+            ((1, 0, 0), (1, 1, 0), (1, 1, 1)),
+            ((1, 0, 0), (1, 1, 1), (1, 0, 1)),
         ]
         lines = ["solid cube"]
         for tri in faces:
@@ -232,11 +261,13 @@ class TestToolsMocked:
             r.returncode, r.stderr, r.stdout = 0, "", ""
             return r
 
-        with patch("subprocess.run", side_effect=run), patch(
-            "openscad_mcp.server.find_openscad", lambda: "/usr/bin/openscad"
-        ), patch(
-            "openscad_mcp.server.get_openscad_capabilities",
-            lambda path=None: {"installed": True, "version": "2021.01", "probed": True},
+        with (
+            patch("subprocess.run", side_effect=run),
+            patch("openscad_mcp.server.find_openscad", lambda: "/usr/bin/openscad"),
+            patch(
+                "openscad_mcp.server.get_openscad_capabilities",
+                lambda path=None: {"installed": True, "version": "2021.01", "probed": True},
+            ),
         ):
             out = await render_fn(scad_content="cube(1);", views=["front", "top"])
         meta = _meta(out)
@@ -286,12 +317,16 @@ class TestToolsReal:
         assert out["bbox_overlaps"] == []
 
     async def test_measure_section(self, project):
-        out = await measure_fn(scad_file=str(project / "asm.scad"), mode="section", section_offset=5)
+        out = await measure_fn(
+            scad_file=str(project / "asm.scad"), mode="section", section_offset=5
+        )
         assert out["success"] is True, out
         assert out["area"] == pytest.approx(20 * 20 - 16 * 16, rel=1e-6)
         assert out["polygon_count"] == 2
         assert out["hole_count"] == 1
-        missed = await measure_fn(scad_file=str(project / "asm.scad"), mode="section", section_offset=50)
+        missed = await measure_fn(
+            scad_file=str(project / "asm.scad"), mode="section", section_offset=50
+        )
         assert missed["empty_section"] is True
 
     async def test_measure_2d_model(self, project):
@@ -304,7 +339,9 @@ class TestToolsReal:
         assert out["mass"]["grams"] == pytest.approx(1.27, rel=1e-6)
 
     async def test_render_grounded_and_annotated(self, project):
-        out = await render_fn(scad_file=str(project / "asm.scad"), views=["front"], grounded=True, annotate=True)
+        out = await render_fn(
+            scad_file=str(project / "asm.scad"), views=["front"], grounded=True, annotate=True
+        )
         meta = _meta(out)
         assert meta["success"] is True, meta
         assert meta["bbox"]["max"] == pytest.approx([20, 20, 10])
@@ -334,20 +371,24 @@ class TestToolsReal:
         assert "body=" in _texts(out)[0] and "(ghost)" in _texts(out)[0]
 
     async def test_render_compare(self, project):
-        out = await render_fn(scad_file=str(project / "asm.scad"), mode="compare", variables_after={"W": 30})
+        out = await render_fn(
+            scad_file=str(project / "asm.scad"), mode="compare", variables_after={"W": 30}
+        )
         meta = _meta(out)
         assert meta["success"] is True, meta
         assert len(_images(out)) == 2
 
     async def test_render_reports_assert_with_image(self, project):
-        out = await render_fn(scad_content="module m(){ assert(false, \"nope\"); cube(1); } m();")
+        out = await render_fn(scad_content='module m(){ assert(false, "nope"); cube(1); } m();')
         meta = _meta(out)
         assert meta["success"] is False
         assert meta["errors"]
         assert len(_images(out)) == 1
 
     async def test_validate_geometry(self, project):
-        out = await validate_fn(scad_content="cube(5); translate([5,5,0]) cube(5);", mode="geometry")
+        out = await validate_fn(
+            scad_content="cube(5); translate([5,5,0]) cube(5);", mode="geometry"
+        )
         assert out["valid"] is False
         codes = {f["code"] for f in out["findings"]}
         assert "non_manifold" in codes or "non_manifold_edges" in codes
@@ -384,6 +425,55 @@ class TestToolsReal:
         assert values == [40, 16, [20, 10], "20", True, {"range": [0, 2, 6]}]
         standalone = await scad_eval_fn(expressions=["sqrt(16)", "len([1,2,3])"])
         assert [r["value"] for r in standalone["results"]] == [4, 3]
+
+    async def test_composite_modes_work_on_bosl2_files(self, project):
+        """Regression: include-inside-module broke on any file including BOSL2."""
+        bosl = Path.home() / ".local/share/OpenSCAD/libraries/BOSL2/std.scad"
+        if not bosl.exists():
+            pytest.skip("BOSL2 not installed")
+        (project / "config").mkdir()
+        (project / "config" / "c.scad").write_text("W = 10; H = 3;\n")
+        part = project / "part.scad"
+        part.write_text(
+            "include <BOSL2/std.scad>\n"
+            "include <config/c.scad>\n"
+            "module body() { cuboid([W, W, H], anchor=BOTTOM); }\n"
+            "module lid() { up(H) cuboid([W, W, 1], anchor=BOTTOM); }\n"
+            "body();\n"
+        )
+        parts = await measure_fn(
+            scad_file=str(part),
+            mode="parts",
+            parts=[{"name": "lid", "code": "lid();"}],
+            variables={"W": 40},
+        )
+        assert parts["success"] is True, parts
+        assert parts["parts"][0]["volume"] == pytest.approx(40 * 40 * 1, rel=1e-6)
+        sec = await measure_fn(scad_file=str(part), mode="section", section_offset=1)
+        assert sec["success"] is True and sec["area"] == pytest.approx(100), sec
+        ev = await scad_eval_fn(expressions=["W + H"], scad_file=str(part))
+        assert ev["results"][0]["value"] == 13
+        img = await render_fn(
+            scad_file=str(part), mode="parts", parts=[{"name": "lid", "code": "lid();"}]
+        )
+        assert _meta(img)["success"] is True, _meta(img)
+        assert not list(project.glob(".openscad-mcp-*")), "wrapper files must be cleaned up"
+
+    async def test_predicate_errors_point_at_model_lines(self, project):
+        out = await validate_fn(
+            scad_file=str(project / "asm.scad"), mode="predicates", predicates=["nope_fn()"]
+        )
+        assert out["valid"] is False
+        assert any("asm.scad" in w or "<inline>" in w for w in out["warnings"]), out
+
+    async def test_includes_resolves_parent_relative_paths(self, project):
+        (project / "sub").mkdir()
+        f = project / "sub" / "m.scad"
+        f.write_text("include <../params.scad>\ncube(wall);\n")
+        out = await validate_fn(scad_file=str(f), mode="includes")
+        ref = out["references"][0]
+        assert ref["found"] is True, out
+        assert ref["resolved_path"].endswith("params.scad")
 
     async def test_every_resource_reads(self, project):
         resources = await server.mcp.get_resources()

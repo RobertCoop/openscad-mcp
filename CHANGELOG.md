@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.claude-plugin/`, and `AGENTS.md`.
 - `evals/`: fixtures, deterministic scorers and a runner for A/B
   comparison of agent outputs (see `evals/README.md`).
+- Composite modes (render parts/section, measure parts/section, validate
+  predicates, scad_eval) now hoist the model's `include`/`use` lines to file
+  scope and inline the rest of the model inside the wrapper module; the
+  wrapper is written next to the model so relative paths resolve. Previously
+  any file including BOSL2 failed with a parser error inside the library,
+  because a library's `use <>` is illegal inside a module body. Diagnostics
+  from wrapper runs are mapped back to the model's own file and line numbers.
+- `validate(mode=includes)` resolves parent-relative references such as
+  `../../config/x.scad` (they were reported as not found).
+- Empty sections now say when the model only instantiates geometry under
+  `if ($preview)`.
 - Structured diagnostics on every tool response: `errors`, `warnings`,
   `deprecated`, `echo_output`, and `hints` (repair advice keyed to the
   message OpenSCAD printed), with file/line locations and TRACE call stacks

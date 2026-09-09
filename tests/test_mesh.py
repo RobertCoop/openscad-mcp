@@ -652,7 +652,9 @@ def test_analyzes_20k_triangles_quickly():
     assert stats.solid_count == 1728
     assert stats.volume == pytest.approx(1728.0)
     assert stats.is_watertight is True
-    assert elapsed < 2.0, f"analysis took {elapsed:.3f}s"
+    # ~0.1 s in isolation; the bound is a smoke guard against a quadratic
+    # regression, loose enough to survive a loaded CI host.
+    assert elapsed < 5.0, f"analysis took {elapsed:.3f}s"
 
 
 # ---------------------------------------------------------------------------

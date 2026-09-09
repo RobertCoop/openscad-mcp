@@ -6,17 +6,30 @@ expression*: a cross-section is ``projection(cut=true)`` of the model, a
 per-part render is ``color(c) part()`` next to the model's module
 definitions, and expression evaluation needs the model's own variables in
 scope. OpenSCAD cannot wrap a file's top-level statements from the outside,
-but it can include a file inside a module body::
+so the wrapper inlines the file's text inside a module body::
 
-    module __model() { include <model.scad> }
-    projection(cut=true) __model();
+    include <BOSL2/std.scad>          // hoisted from the model
+    module __model() {
+        ...the model's remaining text...
+        W = 40;                       // caller variables, appended
+        !union() { lid(); }           // the wrapped operation
+    }
+    __model();
 
-Two facts about that construction, verified on 2021.01:
+Facts about that construction, verified on 2021.01:
 
-* ``-D name=value`` does **not** reach variables inside the included file
-  when it is module-scoped. An assignment appended inside the module body
-  after the include line does override them (last assignment in a scope
-  wins) and prints no warning. So caller variables are injected that way.
+* ``include``/``use`` statements are only legal at file scope once a library
+  is involved (BOSL2's ``std.scad`` contains ``use <builtins.scad>``, which
+  is a syntax error inside a module). So the model's own ``include``/``use``
+  lines are hoisted to file scope and the rest of the text is inlined.
+* Relative paths in the model (``include <../config/x.scad>``,
+  ``import("mesh.stl")``) resolve against the *wrapper file's* directory, so
+  the wrapper for a file on disk is written next to that file.
+* ``-D name=value`` does **not** reach variables inside a module body. An
+  assignment appended inside the module after the model text does override
+  them (last assignment in a scope wins) and prints no warning.
+* The ``!`` root modifier limits output to the wrapped operation, so the
+  model's own top-level geometry is excluded from parts and evaluations.
 * A cut plane that misses the solid makes OpenSCAD print
   ``WARNING: Projection() failed.`` and exit 1 with no output file.
 """
@@ -24,7 +37,7 @@ Two facts about that construction, verified on 2021.01:
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 MODEL_MODULE = "__model"
@@ -52,19 +65,94 @@ def variable_assignments(variables: Optional[Dict[str, Any]]) -> str:
     return "\n".join(f"{k} = {format_scad_value(v)};" for k, v in variables.items()) + "\n"
 
 
-def model_module(
-    include_path: Path,
+_INCLUDE_LINE_RE = re.compile(r"^\s*(?:include|use)\s*<[^>\n]+>\s*;?\s*(?://.*)?$")
+_INCLUDE_STMT_RE = re.compile(r"(?:include|use)\s*<[^>\n]+>\s*;?")
+_BLOCK_COMMENT_INLINE_RE = re.compile(r"/\*.*?\*/")
+
+
+def hoist_source(text: str) -> Tuple[List[str], str]:
+    """Split a model into its ``include``/``use`` lines and the remaining body.
+
+    Whole lines that consist of one include/use statement (with an optional
+    trailing comment) are hoisted verbatim. Include/use statements that share
+    a line with other code are hoisted too and removed from that line.
+    Lines inside block comments and after ``//`` are left alone.
+    """
+    header: List[str] = []
+    body_lines: List[str] = []
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if in_block:
+            body_lines.append(line)
+            if "*/" in line:
+                in_block = False
+            continue
+        if stripped.startswith("/*") and "*/" not in stripped:
+            in_block = True
+            body_lines.append(line)
+            continue
+        if stripped.startswith("//"):
+            body_lines.append(line)
+            continue
+        if _INCLUDE_LINE_RE.match(line):
+            header.append(stripped)
+            body_lines.append("")  # keep line numbers stable
+            continue
+        # Blank out inline block comments (keeping positions) and the tail of
+        # a line comment, so statements inside comments are not hoisted.
+        masked = _BLOCK_COMMENT_INLINE_RE.sub(lambda m: " " * len(m.group(0)), line)
+        cut = masked.find("//")
+        if cut >= 0:
+            masked = masked[:cut] + " " * (len(masked) - cut)
+        spans = [(m.start(), m.end()) for m in _INCLUDE_STMT_RE.finditer(masked)]
+        if spans:
+            for a, b in spans:
+                header.append(line[a:b].strip().rstrip(";"))
+            cleaned = line
+            for a, b in reversed(spans):
+                cleaned = cleaned[:a] + cleaned[b:]
+            body_lines.append(cleaned)
+            continue
+        body_lines.append(line)
+    return header, "\n".join(body_lines)
+
+
+@dataclass
+class WrappedSource:
+    """A wrapper program plus the line offset of the inlined model text."""
+
+    text: str
+    body_line_offset: int
+
+    def rebase_line(self, line: int) -> Optional[int]:
+        """Map a wrapper line number back to the model's own numbering."""
+        rebased = line - self.body_line_offset
+        return rebased if rebased >= 1 else None
+
+
+def build_wrapper(
+    source_text: str,
     variables: Optional[Dict[str, Any]] = None,
     extra_body: str = "",
-) -> str:
-    """Define ``__model()`` wrapping the user's file, with variables injected."""
-    return (
-        f"module {MODEL_MODULE}() {{\n"
-        f"    include <{include_path.as_posix()}>\n"
-        f"{_indent(variable_assignments(variables))}"
-        f"{_indent(extra_body)}"
-        "}\n"
+    tail: str = f"{MODEL_MODULE}();\n",
+) -> WrappedSource:
+    """Build ``__model()`` around the model text with variables injected."""
+    header, body = hoist_source(source_text)
+    lines: List[str] = list(header)
+    lines.append(f"module {MODEL_MODULE}() {{")
+    body_line_offset = len(lines)
+    text = (
+        "\n".join(lines)
+        + "\n"
+        + body.rstrip("\n")
+        + "\n"
+        + _indent(variable_assignments(variables))
+        + _indent(extra_body)
+        + "}\n"
+        + tail
     )
+    return WrappedSource(text=text, body_line_offset=body_line_offset)
 
 
 def _indent(text: str, prefix: str = "    ") -> str:
@@ -108,34 +196,35 @@ def section_in_plane_axes(axis: str) -> Tuple[str, str]:
 
 
 def section_wrapper(
-    include_path: Path,
+    source_text: str,
     axis: str,
     offset: float,
     variables: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Source that exports the cross-section of the model as 2D geometry."""
-    return (
-        model_module(include_path, variables)
-        + f"projection(cut = true) {section_transform(axis, offset)} {MODEL_MODULE}();\n"
+) -> WrappedSource:
+    """Program that exports the cross-section of the model as 2D geometry."""
+    return build_wrapper(
+        source_text,
+        variables,
+        tail=f"projection(cut = true) {section_transform(axis, offset)} {MODEL_MODULE}();\n",
     )
 
 
 def parts_wrapper(
-    include_path: Path,
+    source_text: str,
     parts: List[Dict[str, str]],
     colors: List[str],
     isolate: Optional[str] = None,
     variables: Optional[Dict[str, Any]] = None,
     ghost_others: bool = True,
-) -> str:
-    """Source that instantiates each part in its own colour.
+) -> WrappedSource:
+    """Program that instantiates each part in its own colour.
 
     ``parts`` is a list of ``{"name": ..., "code": ...}`` where ``code`` is an
     OpenSCAD statement using the model's modules (for example ``"lid();"``).
     The parts are wrapped in a ``!``-rooted union, so the model file's own
     top-level geometry is not drawn: only the parts are. With ``isolate``
     set, every other part is drawn as a translucent ghost (the ``%``
-    modifier) or omitted when ``ghost_others`` is false.
+    modifier with an alpha) or omitted when ``ghost_others`` is false.
     """
     body = []
     for idx, part in enumerate(parts):
@@ -150,7 +239,7 @@ def parts_wrapper(
         else:
             body.append(f'color("{color}") {{ {code} }}')
     rooted = "!union() {\n" + _indent(chr(10).join(body)) + "}\n"
-    return model_module(include_path, variables, extra_body=rooted) + f"{MODEL_MODULE}();\n"
+    return build_wrapper(source_text, variables, extra_body=rooted)
 
 
 def _statement(code: str) -> str:
@@ -161,25 +250,25 @@ def _statement(code: str) -> str:
 
 
 def part_wrapper(
-    include_path: Path,
+    source_text: str,
     code: str,
     variables: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Source that evaluates exactly one part's code with the model's modules.
+) -> WrappedSource:
+    """Program that evaluates exactly one part's code with the model's modules.
 
     Uses the ``!`` root modifier so the model's own top-level geometry is
     excluded from the export.
     """
     rooted = "!union() {\n" + _indent(_statement(code)) + "}\n"
-    return model_module(include_path, variables, extra_body=rooted) + f"{MODEL_MODULE}();\n"
+    return build_wrapper(source_text, variables, extra_body=rooted)
 
 
 def eval_wrapper(
-    include_path: Path,
+    source_text: str,
     expressions: List[str],
     variables: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Source that echoes each expression, evaluated in the model's scope.
+) -> WrappedSource:
+    """Program that echoes each expression, evaluated in the model's scope.
 
     The model's top-level geometry is still instantiated (echo runs during
     evaluation), but the run uses CSG export so no CGAL work happens.
@@ -187,7 +276,7 @@ def eval_wrapper(
     echoes = "\n".join(
         f'echo("{EVAL_MARKER}", {i}, ({expr}));' for i, expr in enumerate(expressions)
     )
-    return model_module(include_path, variables, extra_body=echoes) + f"{MODEL_MODULE}();\n"
+    return build_wrapper(source_text, variables, extra_body=echoes)
 
 
 # ---------------------------------------------------------------------------

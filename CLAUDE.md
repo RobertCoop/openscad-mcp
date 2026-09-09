@@ -83,7 +83,7 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 
 ### Supporting modules
 
-- **`wrappers.py`** — source-level wrappers: `module __model(){ include <file> ...}` with caller variables injected as trailing assignments (`-D` does not reach a module-scoped include), `!union(){...}` root modifier to suppress the model's own top-level geometry for parts/sections, and the ECHO value parser
+- **`wrappers.py`** — source-level wrappers. `hoist_source()` lifts the model's `include`/`use` lines to file scope (a library's `use <>` is a syntax error inside a module, so BOSL2 files broke otherwise) and `build_wrapper()` inlines the remaining text inside `module __model(){...}` with caller variables as trailing assignments (`-D` does not reach a module body). The wrapper file is written *next to the model* (`_ModelSource.wrapper_file`) so relative includes/imports resolve, and deleted afterwards. `!union(){...}` limits output to the wrapped operation. `WrappedSource.rebase_line` maps wrapper line numbers back to the model
 - **`mesh.py`** — stdlib STL/SVG analysis (welding, union-find components, signed volumes, edge census)
 - **`camera.py`** — orthographic camera model (`view_height_mm = 0.397825 * distance`, keyed to image height), `fit_camera`, Pillow annotation, spatial digest, part palette
 - **`reference.py`** — sourced fits/fasteners/inserts/bearings/joints/DFM/materials data, `conventions_brief()` (server instructions), `cheatsheet()`
@@ -122,7 +122,8 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **`Volumes:` in the CGAL banner is not a body count**: a hollow shell and two disjoint cubes both report 3. Report it as `nef_volumes`; gate manifoldness on `Simple:` only.
 - **Framing**: `render` auto-fits (`--autocenter --viewall`) unless `grounded=true`; the default is a single isometric view because each image costs ~640 vision tokens. Auto-fit destroys absolute scale, so the digest says "scale: unknown" unless grounded.
 - **Tool surface budget**: 15 tools, about 17k chars of schema; a feature is a *mode* of an existing tool until it proves it needs to be a tool (tool-selection accuracy degrades past ~30 tools). `tests/test_correctness_fixes.py` enforces the budget.
-- **Wrapped modes cannot use `-D`**: for section/parts/eval the model is included inside a module, so variables are injected as assignments appended to that module body (verified: `-D` is ignored there, appended assignments override silently).
+- **Wrapped modes cannot use `-D`**: for section/parts/eval the model text is inlined inside a module, so variables are injected as assignments appended to that module body (verified: `-D` is ignored there, appended assignments override silently). Never put `include`/`use` inside the module: hoist them.
+- **`$preview` guards**: files that instantiate geometry only under `if ($preview)` export nothing; sections and measurements need the guard variable passed via `variables`.
 - **Response size management**: Large renders auto-save to files instead of returning base64 to avoid oversized MCP responses.
 - **Camera format**: 6-value eye+center format (`--camera=eye_x,eye_y,eye_z,center_x,center_y,center_z`), not the 7-value translate+rotate format.
 - **Render caching**: Enabled by default, validated against a per-entry dependency manifest (see Architecture). Cache stored in `~/.cache/openscad-mcp/`. Never cache a render without recording what it read.

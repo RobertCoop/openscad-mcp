@@ -417,6 +417,8 @@ def _check_allowed_path(path: Union[str, Path], what: str) -> None:
     if not config.security.allowed_paths:
         return
     resolved = Path(path).resolve()
+    if _is_within(resolved, config.temp_dir):
+        return  # the server's own temp dir (wrapper programs, inline content)
     if not any(_is_within(resolved, ap) for ap in config.security.allowed_paths):
         raise ValueError(
             f"{what} '{path}' is not within allowed paths: {config.security.allowed_paths}"
@@ -2580,34 +2582,72 @@ class _ModelSource:
         self.scad_file = scad_file
         self.prefix = prefix
         self.path: Optional[Path] = None
+        self.text: str = ""
+        self.wrapper_dir: Optional[Path] = None
+        self.display_name: str = "<inline>"
         self._temp: Optional[Path] = None
+        self._cleanup: List[Path] = []
 
     def __enter__(self) -> "_ModelSource":
         config = get_config()
+        temp_dir_path = Path(config.temp_dir)
+        temp_dir_path.mkdir(parents=True, exist_ok=True)
         if self.scad_content:
             _validate_source_size(self.scad_content)
-            temp_dir_path = Path(config.temp_dir)
-            temp_dir_path.mkdir(parents=True, exist_ok=True)
             self._temp = temp_dir_path / f"{self.prefix}_{uuid.uuid4().hex[:8]}.scad"
             self._temp.write_text(self.scad_content)
             self.path = self._temp
+            self.text = self.scad_content
+            self.wrapper_dir = temp_dir_path
         else:
             _check_allowed_path(self.scad_file or "", "File path")
             self.path = Path(self.scad_file or "")
             if not self.path.exists():
                 raise FileNotFoundError(f"SCAD file not found: {self.scad_file}")
+            self.text = self.path.read_text(errors="replace")
+            # Wrapper programs inline the model text, so relative includes and
+            # imports must resolve from the model's own directory.
+            self.wrapper_dir = self.path.parent
+            self.display_name = self.path.name
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        if self._temp is not None:
+        for f in [self._temp, *self._cleanup]:
+            if f is None:
+                continue
             try:
-                self._temp.unlink()
+                f.unlink()
             except OSError:
                 pass
+
+    def wrapper_file(self, wrapped: Any) -> Path:
+        """Write a wrapper program next to the model and register it for cleanup."""
+        target_dir = self.wrapper_dir or Path(get_config().temp_dir)
+        path = target_dir / f".openscad-mcp-{self.prefix}-{uuid.uuid4().hex[:8]}.scad"
+        try:
+            path.write_text(wrapped.text)
+        except OSError:
+            # Read-only project directory: fall back to the temp dir. Relative
+            # includes may then fail to resolve, which the diagnostics report.
+            path = Path(get_config().temp_dir) / path.name
+            path.write_text(wrapped.text)
+        self._cleanup.append(path)
+        return path
 
     @property
     def inline_path(self) -> Optional[str]:
         return str(self._temp) if self._temp is not None else None
+
+
+def _rebase_diagnostics(diag: Diagnostics, wrapper_path: Path, wrapped: Any, display: str) -> None:
+    """Point wrapper-file diagnostics back at the model's own file and lines."""
+    wname = wrapper_path.name
+    for rec in diag.records:
+        if rec.file and (rec.file.endswith(wname) or rec.file == "<inline>"):
+            rec.file = display
+            if rec.line is not None:
+                rec.line = wrapped.rebase_line(rec.line)
+        rec.trace = [t.replace(str(wrapper_path), display).replace(wname, display) for t in rec.trace]
 
 
 _measure_cache: Dict[str, Tuple[Any, Diagnostics]] = {}
@@ -2699,10 +2739,12 @@ def _measure_source(
     if cached is not None:
         return cached
     if part_code is not None:
-        wrapper = part_wrapper(source.path or Path(), part_code, variables)
+        wrapped = part_wrapper(source.text, part_code, variables)
+        wpath = source.wrapper_file(wrapped)
         stats, diag, _ = _analyze_mesh_export(
-            wrapper, None, variables, include_paths, "part", apply_variables=False
+            None, str(wpath), variables, include_paths, "part", apply_variables=False
         )
+        _rebase_diagnostics(diag, wpath, wrapped, source.display_name)
     elif source.scad_content:
         stats, diag, _ = _analyze_mesh_export(
             source.scad_content, None, variables, include_paths, "measure", apply_variables=True
@@ -2732,11 +2774,13 @@ def _section_polygons(
     temp_dir_path = Path(config.temp_dir)
     temp_dir_path.mkdir(parents=True, exist_ok=True)
     svg_output = temp_dir_path / f"section_{uuid.uuid4().hex[:8]}.svg"
-    wrapper = section_wrapper(source.path or Path(), axis, offset, variables)
+    wrapped = section_wrapper(source.text, axis, offset, variables)
+    wpath = source.wrapper_file(wrapped)
     try:
         ev = _evaluate_scad(
-            wrapper, None, str(svg_output), None, None, include_paths, "export", "section"
+            None, str(wpath), str(svg_output), None, None, include_paths, "export", "section"
         )
+        _rebase_diagnostics(ev.diagnostics, wpath, wrapped, source.display_name)
         if ev.output_path is None:
             # A plane that misses the solid: WARNING: Projection() failed, exit 1
             return [], ev.diagnostics
@@ -3058,7 +3102,9 @@ async def render(
             if not polys:
                 digest = (
                     f"{title}: the cut plane misses the model (no section geometry). "
-                    "Try a different offset; use measure(mode=model) for the bbox."
+                    "Try a different offset (measure(mode=model) gives the bbox). If the "
+                    "file only instantiates geometry under `if ($preview)`, nothing exists "
+                    "at export time: pass the guard variable (e.g. variables={'make_stl': true})."
                 )
                 meta["empty_section"] = True
             else:
@@ -3080,9 +3126,10 @@ async def render(
             part_list = _parse_parts(parts)
             palette = _palette()
             with _ModelSource(scad_content, scad_file, "parts") as src:
-                wrapper = parts_wrapper(
-                    src.path or Path(), part_list, palette, isolate=isolate, variables=parsed_vars
+                wrapped = parts_wrapper(
+                    src.text, part_list, palette, isolate=isolate, variables=parsed_vars
                 )
+                wpath = src.wrapper_file(wrapped)
                 view_list2 = list(_validate_views(views, DEFAULT_RENDER_VIEWS))
                 bbox = None
                 if grounded:
@@ -3095,7 +3142,7 @@ async def render(
                 async def _one_part_view(v: str):
                     async with semaphore:
                         return await loop.run_in_executor(
-                            None, _render_one_view, wrapper, None, v, None, None, None,
+                            None, _render_one_view, None, str(wpath), v, None, None, None,
                             parsed_size, color_scheme, {}, include_paths, bbox, annotate,
                         )
 
@@ -3312,7 +3359,10 @@ async def measure(
                 if not polys:
                     result["empty_section"] = True
                     result["contours"] = []
-                    result["note"] = "the cut plane misses the model"
+                    result["note"] = (
+                        "the cut plane misses the model, or the file instantiates geometry "
+                        "only under `if ($preview)` (pass the guard variable via variables)"
+                    )
                 else:
                     pstats = meshlib.analyze_polygons(polys)
                     result.update(_stats_dict(pstats, detailed))
@@ -3468,12 +3518,14 @@ async def validate(
             if not exprs:
                 raise ValueError("predicates must be a non-empty list of OpenSCAD boolean expressions")
             with _ModelSource(scad_content, scad_file, "pred") as src:
-                wrapper = eval_wrapper(src.path or Path(), [str(e) for e in exprs], parsed_vars)
+                wrapped = eval_wrapper(src.text, [str(e) for e in exprs], parsed_vars)
+                wpath = src.wrapper_file(wrapped)
                 async with semaphore:
                     ev = await loop.run_in_executor(
-                        None, _evaluate_scad, wrapper, None, null_output, "csg",
+                        None, _evaluate_scad, None, str(wpath), null_output, "csg",
                         None, include_paths, "validation", "predicates",
                     )
+                _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
             diag = ev.diagnostics
             evaluated = collect_eval_results(diag.echo_output, len(exprs))
             results = []
@@ -3506,11 +3558,28 @@ async def validate(
         diag = ev.diagnostics
         missing = set(unresolved_includes(diag))
         resolved: List[Dict[str, Any]] = []
+        model_dir = (src.path or Path()).parent
+        dep_resolved = {}
+        for d in ev.dependencies:
+            try:
+                dep_resolved[str(Path(d).resolve())] = d
+            except OSError:
+                continue
         for ref in references:
-            match = next(
-                (d for d in ev.dependencies if d.replace("\\", "/").endswith(ref.replace("\\", "/"))),
-                None,
-            )
+            # A reference like ../../config/x.scad is recorded by OpenSCAD as
+            # a normalised absolute path, so compare resolved paths first and
+            # fall back to a suffix match for OPENSCADPATH-resolved libraries.
+            match = None
+            try:
+                match = dep_resolved.get(str((model_dir / ref).resolve()))
+            except OSError:
+                match = None
+            if match is None:
+                norm_ref = ref.replace("\\", "/").lstrip("./")
+                match = next(
+                    (d for d in ev.dependencies if d.replace("\\", "/").endswith(norm_ref)),
+                    None,
+                )
             # OpenSCAD records import()/surface() targets it *tried* to read,
             # so existence must be checked separately.
             exists = match is not None and Path(match).exists()
@@ -3570,12 +3639,14 @@ async def scad_eval(
         null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
         loop = asyncio.get_running_loop()
         with _ModelSource(scad_content or "// standalone\n" if not scad_file else None, scad_file, "eval") as src:
-            wrapper = eval_wrapper(src.path or Path(), exprs, parsed_vars)
+            wrapped = eval_wrapper(src.text, exprs, parsed_vars)
+            wpath = src.wrapper_file(wrapped)
             async with get_render_semaphore():
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, wrapper, None, null_output, "csg",
+                    None, _evaluate_scad, None, str(wpath), null_output, "csg",
                     None, include_paths, "evaluation", "eval",
                 )
+            _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         diag = ev.diagnostics
         results = collect_eval_results(diag.echo_output, len(exprs))
         for expr, r in zip(exprs, results):
