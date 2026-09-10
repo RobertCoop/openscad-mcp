@@ -4150,6 +4150,26 @@ def _resolve_check_inputs(
     return asm, scad_content, scad_file, all_vars
 
 
+def _eval_in_model_scope(
+    src: "_ModelSource",
+    exprs: List[str],
+    all_vars: Dict[str, Any],
+    include_paths: Optional[List[str]],
+    tag: str,
+) -> List[Dict[str, Any]]:
+    """Evaluate SCAD expressions in the model's scope; one CSG-mode run, no CGAL."""
+    from .wrappers import build_wrapper, collect_eval_results
+
+    wrapped = build_wrapper(src.text, all_vars, extra_body="\n".join(
+        f'echo("__OPENSCAD_MCP_EVAL__", {i}, ({e}));' for i, e in enumerate(exprs)
+    ))
+    wpath = src.wrapper_file(wrapped)
+    null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
+    ev = _evaluate_scad(None, str(wpath), null_output, "csg", None,
+                        src.include_paths_for_wrapper(include_paths), "validation", tag)
+    return collect_eval_results(ev.diagnostics.echo_output, len(exprs))
+
+
 def _fn_of(all_vars: Dict[str, Any]) -> Optional[int]:
     v = all_vars.get("$fn")
     try:
@@ -4276,12 +4296,15 @@ async def check(
     plane; kind=static|sliding. "alignment": coaxial hole stacks across
     parts, offsets, orphans. "motion": sweep moving= about axis/center over
     range deg, or along vector over range mm; full turns add a certificate.
-    "rules": every rule in the check file; exit_code 0/1/2. quality:
+    "rules": every rule in the check file; exit_code 0/1/2. Any number or
+    vector in a rule or motion may be a SCAD expression string ("[BOLT_R,
+    0, BASE_H]") evaluated in the model's scope. quality:
     draft|normal|high or $fn, echoed per row; distances inside the
     tessellation error bound are UNRESOLVED. volume=true cross-checks with
     OpenSCAD's intersection volume.
     """
     from . import geom
+    from .assembly import apply_expression_values, collect_expression_slots
     from .checks import Quality, RuleEngine, exit_code, summarize
 
     t0 = time.time()
@@ -4297,6 +4320,18 @@ async def check(
 
         timings: Dict[str, float] = {}
         with _ModelSource(scad_content, scad_file, "check") as src:
+            # Expression-valued numbers ("[BOLT_R, 0, BASE_H]") in rules and
+            # motion blocks are evaluated in the model's scope first, so the
+            # rules below see plain numbers that track the design.
+            slots = collect_expression_slots(asm)
+            if slots:
+                t1 = time.time()
+                values = await asyncio.get_running_loop().run_in_executor(
+                    None, _eval_in_model_scope, src, [sl.expr for sl in slots], all_vars,
+                    include_paths, "expr",
+                )
+                apply_expression_values(slots, values)
+                timings["expressions_s"] = round(time.time() - t1, 3)
             t1 = time.time()
             exported = await _export_parts(src, asm, all_vars, include_paths, ctx)
             timings["export_s"] = round(time.time() - t1, 3)
@@ -4323,16 +4358,7 @@ async def check(
             loop = asyncio.get_running_loop()
 
             def predicate_runner(exprs: List[str]) -> List[Dict[str, Any]]:
-                from .wrappers import build_wrapper, collect_eval_results
-
-                wrapped = build_wrapper(src.text, all_vars, extra_body="\n".join(
-                    f'echo("__OPENSCAD_MCP_EVAL__", {i}, ({e}));' for i, e in enumerate(exprs)
-                ))
-                wpath = src.wrapper_file(wrapped)
-                null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
-                ev = _evaluate_scad(None, str(wpath), null_output, "csg", None,
-                                    src.include_paths_for_wrapper(include_paths), "validation", "pred")
-                return collect_eval_results(ev.diagnostics.echo_output, len(exprs))
+                return _eval_in_model_scope(src, exprs, all_vars, include_paths, "pred")
 
             def feature_provider() -> Dict[str, Any]:
                 from . import csgfeatures

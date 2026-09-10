@@ -434,3 +434,149 @@ class TestMassRuleReal:
         assert rows[0]["why"] == "the block must stay light"
         assert rows[2]["magnitude"]["mass_g"] > 1.2
         assert r["exit_code"] == 1
+
+
+class TestExpressionSlots:
+    """Expression-valued numbers: grammar and substitution, no OpenSCAD."""
+
+    @staticmethod
+    def _asm(checks, motion=None):
+        from openscad_mcp.assembly import parse_assembly
+
+        part = {"name": "a", "code": "a();"}
+        if motion:
+            part["motion"] = motion
+        return parse_assembly({"parts": [part], "checks": checks})
+
+    def test_collects_strings_under_numeric_keys_only(self):
+        from openscad_mcp.assembly import collect_expression_slots
+
+        asm = self._asm(
+            [
+                {"rule": "probe", "point": "[X, 0, Z]", "expect": "SOLID", "why": "W"},
+                {"rule": "ray", "origin": [1, 2, "TOP * 2"], "direction": [0, 0, -1]},
+                {"rule": "clearance", "pairs": [["a", "a"]], "min_mm": "GAP"},
+            ],
+            motion={"type": "rotate", "axis": [0, 0, 1], "range": [0, "SWING"]},
+        )
+        slots = collect_expression_slots(asm)
+        assert [(s.label, s.expr) for s in slots] == [
+            ("checks[0].point", "[X, 0, Z]"),
+            ("checks[1].origin[2]", "TOP * 2"),
+            ("checks[2].min_mm", "GAP"),
+            ("parts.a.motion.range[1]", "SWING"),
+        ]
+
+    def test_apply_substitutes_and_records(self):
+        from openscad_mcp.assembly import apply_expression_values, collect_expression_slots
+
+        asm = self._asm(
+            [{"rule": "probe", "point": "[X, 0, Z]", "expect": "SOLID"}],
+            motion={"type": "rotate", "axis": [0, 0, 1], "range": [0, "SWING"]},
+        )
+        slots = collect_expression_slots(asm)
+        apply_expression_values(
+            slots,
+            [
+                {"evaluated": True, "value": [1.5, 0, 9]},
+                {"evaluated": True, "value": 90},
+            ],
+        )
+        assert asm.checks[0]["point"] == [1.5, 0, 9]
+        assert asm.checks[0]["_expressions"] == {
+            "checks[0].point": {"expr": "[X, 0, Z]", "value": [1.5, 0, 9]}
+        }
+        assert "_unresolved" not in asm.checks[0]
+        assert asm.parts[0].motion["range"] == [0, 90]
+
+    def test_non_numeric_marks_rule_unresolved_and_engine_reports_it(self):
+        from openscad_mcp.assembly import apply_expression_values, collect_expression_slots
+        from openscad_mcp.checks import RuleEngine
+
+        asm = self._asm([{"rule": "probe", "point": "[X, 0, NOPE]", "expect": "SOLID"}])
+        slots = collect_expression_slots(asm)
+        apply_expression_values(slots, [{"evaluated": True, "value": None}])
+        assert "undef" in asm.checks[0]["_unresolved"]
+        rows = RuleEngine(asm, {}, Quality(fn=32)).run()
+        assert rows[0]["status"] == "UNRESOLVED"
+        assert rows[0]["rule"] == "probe"
+        assert "[X, 0, NOPE]" in rows[0]["note"]
+        assert rows[0]["expressions"]["checks[0].point"]["value"] is None
+        assert exit_code(rows) == 2
+
+    def test_motion_expression_failure_raises(self):
+        from openscad_mcp.assembly import (
+            AssemblyError,
+            apply_expression_values,
+            collect_expression_slots,
+        )
+
+        asm = self._asm([], motion={"type": "rotate", "axis": "AXIS"})
+        slots = collect_expression_slots(asm)
+        with pytest.raises(AssemblyError, match="parts.a.motion.axis"):
+            apply_expression_values(slots, [{"evaluated": False, "value": None}])
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"rule": "probe", "point": "[1,2,3]; cube(9)", "expect": "AIR"},
+            {"rule": "probe", "point": "echo(1)", "expect": "AIR"},
+            {"rule": "ray", "origin": [0, 0, ""], "direction": [0, 0, 1]},
+            {"rule": "probe", "point": "include <x.scad>", "expect": "AIR"},
+        ],
+    )
+    def test_grammar_rejects_statements_in_expressions(self, bad):
+        from openscad_mcp.assembly import AssemblyError
+
+        with pytest.raises(AssemblyError, match="expression"):
+            self._asm([bad])
+
+    def test_text_keys_are_never_expressions(self):
+        from openscad_mcp.assembly import collect_expression_slots
+
+        asm = self._asm(
+            [{"rule": "predicate", "expr": "A > B", "why": "GAP"}, {"rule": "print", "part": "a"}]
+        )
+        assert collect_expression_slots(asm) == []
+
+
+@needs_openscad
+class TestExpressionsReal:
+    async def test_expressions_follow_the_model(self, project):
+        r = await check_fn(
+            scad_file=str(project / "asm.scad"),
+            mode="rules",
+            parts=PARTS[:2],
+            checks=[
+                {"rule": "probe", "point": "[5, 5, 5]", "expect": "SOLID"},
+                {"rule": "probe", "point": [10 + 0.25, 5, "GAP * 10"], "expect": "AIR"},
+                {"rule": "clearance", "pairs": [["a", "b"]], "min_mm": "GAP"},
+                {"rule": "mass", "part": "a", "com_within_mm": "GAP", "point": "[5, 5, 5]"},
+                {"rule": "probe", "point": "[5, 5, NOT_A_NAME]", "expect": "SOLID"},
+            ],
+            quality=24,
+        )
+        assert r["success"] is True, r
+        rows = r["findings"]
+        assert [x["status"] for x in rows] == ["PASS", "PASS", "PASS", "PASS", "UNRESOLVED"]
+        assert rows[0]["expressions"]["checks[0].point"]["value"] == [5, 5, 5]
+        assert rows[1]["expressions"]["checks[1].point[2]"]["value"] == 5
+        assert rows[2]["expressions"]["checks[2].min_mm"]["value"] == 0.5
+        assert rows[2]["magnitude"]["required_mm"] == 0.5
+        assert "NOT_A_NAME" in rows[4]["note"]
+        assert r["exit_code"] == 2
+        assert "expressions_s" in r["timings"]
+
+    async def test_variables_reach_expressions(self, project):
+        r = await check_fn(
+            scad_file=str(project / "asm.scad"),
+            mode="rules",
+            parts=PARTS[:2],
+            checks=[{"rule": "clearance", "pairs": [["a", "b"]], "min_mm": "GAP"}],
+            variables={"GAP": 2},
+            quality=24,
+        )
+        row = r["findings"][0]
+        assert row["magnitude"]["required_mm"] == 2
+        assert row["magnitude"]["distance_mm"] == pytest.approx(2.0, abs=1e-6)
+        assert row["status"] == "PASS"

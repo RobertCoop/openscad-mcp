@@ -122,13 +122,18 @@ checks:
 
   # probe: classify a world point as SOLID, AIR or SURFACE. size_mm turns the
   # point into a small box, which resolves points that land on a face.
+  #
+  # Any number or vector in a rule may be a SCAD expression string, evaluated
+  # in the model's own scope before the rules run, so the check follows the
+  # design's parameters instead of a copy of them. Each row echoes what the
+  # expressions evaluated to under "expressions".
   - rule: probe
-    point: [15, 0, 10]
+    point: "[15, 0, PLATTER_Z + PLATTER_H / 2]"
     expect: SOLID
     reason: the platter must cover the plate out to r = 15
 
   - rule: probe
-    point: [15, 0, 7]
+    point: [15, 0, "BASE_H + WASHER_T / 2"]
     expect: AIR
     size_mm: 0.5
     reason: the gap under the platter must stay open
@@ -136,7 +141,7 @@ checks:
   # ray: cast from origin along direction and name the part that must be hit
   # first. Omit first_hit to require that nothing is hit at all.
   - rule: ray
-    origin: [15, 0, 60]
+    origin: [15, 0, "POST_TOP * 2"]
     direction: [0, 0, -1]
     max_distance_mm: 120
     first_hit: platter
@@ -175,7 +180,7 @@ checks:
 
   - rule: mass
     part: platter
-    com_within_mm: 0.5        # of the line axis, or of a point: [x, y, z]
+    com_within_mm: "(BORE_D - POST_D) / 2 + 0.2"   # of the line axis, or of point: [x, y, z]
     axis: [[0, 0, 0], [0, 0, 1]]
     why: an off-centre platter wobbles on the spindle
 

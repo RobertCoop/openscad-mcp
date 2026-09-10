@@ -665,8 +665,8 @@ parts:
     motion:                   # makes this part movable, and pairs with it "sliding"
       type: rotate            # rotate | translate
       axis: [0, 0, 1]         # axis (rotate) or vector (translate)
-      center: [0, 0, 0]
-      range: [0, 360]         # degrees for rotate, mm for translate
+      center: "[0, 0, PIVOT_Z]"   # any number or vector may be a SCAD expression
+      range: [0, "SWING_DEG"]     # degrees for rotate, mm for translate
   - name: pin
     code: "pin();"
     place: "translate([0,0,-2])"
@@ -741,6 +741,21 @@ part's own `mass_g` wins (a purchased part), then its `material` or
 `density_source` map so a defaulted density is visible. A part whose mesh is
 not watertight, or that has neither a mesh nor a `mass_g`, makes the row
 UNRESOLVED rather than a number. `at` is the centre of mass.
+
+### Expression-valued numbers
+
+Any number or vector in a rule or a motion block may be written as a SCAD
+expression string: `point: "[BOLT_R, 0, BASE_H]"`, `origin: [15, 0, "POST_TOP * 2"]`,
+`min_mm: "GAP_MIN"`, `com_within_mm: "(BORE_D - POST_D) / 2"`. Expressions are
+evaluated in the model's own scope, with `variables` applied, in one extra
+OpenSCAD pass before the rules run, so a check file follows the design's
+parameters instead of a copy of them. Every row from such a rule carries
+`expressions: {"checks[3].point": {expr, value}}`. An expression that does not
+evaluate to a number or a vector of numbers (an `undef` from a misspelt name,
+a string, a boolean) makes that rule one UNRESOLVED row with the reason and
+exit code 2; the other rules still run. Text keys (`rule`, `why`, `part`,
+`expr`, `expect`, ...) are never evaluated, and expressions may not contain
+statements, braces, semicolons or `include`/`use`/`import`/`echo`/`assert`.
 
 ### The row shape
 

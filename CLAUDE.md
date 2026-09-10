@@ -87,7 +87,7 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 
 ### Supporting modules
 
-- **`assembly.py`** — the assembly model: `Part`/`Frame`/`Assembly`, check-file grammar (YAML/JSON), frame composition as SCAD prefix text, `part_body()` (`!union(){ placement { code } }`)
+- **`assembly.py`** — the assembly model: `Part`/`Frame`/`Assembly`, check-file grammar (YAML/JSON), frame composition as SCAD prefix text, `part_body()` (`!union(){ placement { code } }`); expression-valued numbers (`EXPRESSION_KEYS`): string values under coordinate/limit keys are evaluated in model scope by `check` before the rules run (`collect_expression_slots` / `apply_expression_values`), a failed one marks the rule `_unresolved`
 - **`checks.py`** — `RuleEngine` over `geom` meshes: interference/clearance/contact/predicate/probe/ray/sweep/alignment/print/mass rules, one row shape, `exit_code`
 - **`geom.py`** — the one mesh kernel: BVH (leaf 1), exact tri–tri distance, generalized winding number (the point-in-solid primitive; ray parity is internal only), Möller–Trumbore with the behind-origin guard, coplanar contact area, penetration depth, sweeps, the (r,z) full-turn certificate
 - **`csgfeatures.py`** — CSG-dump parser: cylinders with world transforms and polarity, hull/minkowski masking, stubs dropped, pattern grouping, fit candidates, cross-part alignment

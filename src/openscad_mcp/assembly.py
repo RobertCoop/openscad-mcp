@@ -263,12 +263,11 @@ def _validate_motion(name: str, motion: Dict[str, Any]) -> None:
     if kind not in ("rotate", "translate"):
         raise AssemblyError(f"part '{name}': motion.type must be rotate or translate")
     axis = motion.get("axis") or motion.get("vector")
-    if not (isinstance(axis, (list, tuple)) and len(axis) == 3):
+    if not _is_vec_or_expr(axis, 3):
         raise AssemblyError(f"part '{name}': motion needs axis (rotate) or vector (translate)")
-    if "range" in motion:
-        rng = motion["range"]
-        if not (isinstance(rng, (list, tuple)) and len(rng) == 2):
-            raise AssemblyError(f"part '{name}': motion.range must be [start, end]")
+    if "range" in motion and not _is_vec_or_expr(motion["range"], 2):
+        raise AssemblyError(f"part '{name}': motion.range must be [start, end]")
+    _validate_expressions(motion, f"part '{name}' motion")
 
 
 def parse_parts(parts: Any) -> List[Part]:
@@ -357,6 +356,7 @@ def _validate_check(rule: Dict[str, Any], index: int, part_names: List[str]) -> 
             raise AssemblyError(f"checks[{index}]: unknown part '{val}' in {key}")
     if kind == "mass":
         _validate_mass_rule(rule, index, part_names)
+    _validate_expressions(rule, f"checks[{index}]")
     return rule
 
 
@@ -370,7 +370,7 @@ def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str])
                 raise AssemblyError(f"checks[{index}]: unknown part '{nm}' in parts")
     for key in ("max_g", "min_g", "com_within_mm", "max_inertia_g_mm2", "density_g_cm3"):
         val = rule.get(key)
-        if val is not None:
+        if val is not None and not isinstance(val, str):
             try:
                 if float(val) < 0:
                     raise ValueError
@@ -379,15 +379,19 @@ def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str])
                     f"checks[{index}]: mass.{key} must be a non-negative number"
                 ) from None
     axis, point = rule.get("axis"), rule.get("point")
-    if axis is not None and not (
-        isinstance(axis, (list, tuple))
-        and len(axis) == 2
-        and all(isinstance(v, (list, tuple)) and len(v) == 3 for v in axis)
-    ):
-        raise AssemblyError(f"checks[{index}]: mass.axis must be [[x,y,z],[dx,dy,dz]]")
-    if axis is not None and all(float(v) == 0.0 for v in axis[1]):
-        raise AssemblyError(f"checks[{index}]: mass.axis direction must not be zero")
-    if point is not None and not (isinstance(point, (list, tuple)) and len(point) == 3):
+    if axis is not None and not isinstance(axis, str):
+        if not (
+            isinstance(axis, (list, tuple))
+            and len(axis) == 2
+            and all(_is_vec_or_expr(v, 3) for v in axis)
+        ):
+            raise AssemblyError(f"checks[{index}]: mass.axis must be [[x,y,z],[dx,dy,dz]]")
+        direction = axis[1]
+        if not isinstance(direction, str) and all(
+            not isinstance(v, str) and float(v) == 0.0 for v in direction
+        ):
+            raise AssemblyError(f"checks[{index}]: mass.axis direction must not be zero")
+    if point is not None and not _is_vec_or_expr(point, 3):
         raise AssemblyError(f"checks[{index}]: mass.point must be [x,y,z]")
     if rule.get("com_within_mm") is not None and axis is None and point is None:
         raise AssemblyError(f"checks[{index}]: mass.com_within_mm needs axis or point")
@@ -397,6 +401,157 @@ def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str])
         rule.get(k) is not None for k in ("max_g", "min_g", "com_within_mm", "max_inertia_g_mm2")
     ):
         return  # facts-only row
+
+
+# ---------------------------------------------------------------------------
+# Expression-valued numbers
+# ---------------------------------------------------------------------------
+#
+# Any number or vector under one of these keys may be written as a SCAD
+# expression string ("[BOLT_R, 0, BASE_H]", "GAP * 2") and is evaluated in the
+# model's own scope before the rules run, so a check file tracks the design's
+# parameters instead of a snapshot of them. Text-valued keys (rule, why, part,
+# expr, expect, ...) are never evaluated.
+
+EXPRESSION_KEYS = frozenset(
+    {
+        # coordinates
+        "point",
+        "origin",
+        "direction",
+        "axis",
+        "center",
+        "vector",
+        "range",
+        "range_deg",
+        "range_mm",
+        # limits
+        "tolerance_mm",
+        "min_mm",
+        "required_mm",
+        "min_gap_mm",
+        "min_area_mm2",
+        "max_distance_mm",
+        "size_mm",
+        "steps",
+        "max_g",
+        "min_g",
+        "com_within_mm",
+        "max_inertia_g_mm2",
+        "density_g_cm3",
+        "max_overhang_deg",
+        "max_overhang_area_mm2",
+        "min_feature_mm",
+        "max_unsupported_reach_mm",
+        "nozzle_mm",
+        "layer_height_mm",
+    }
+)
+
+FORBIDDEN_IN_EXPRESSION = re.compile(r"\b(include|use|import|surface|echo|assert)\b|[{};]")
+
+
+def _is_vec_or_expr(value: Any, length: int) -> bool:
+    if isinstance(value, str):
+        return True
+    return isinstance(value, (list, tuple)) and len(value) == length
+
+
+def _walk_expressions(container: Any, label: str):
+    """Yield ``(container, key, expr, label)`` for every string under an expression key."""
+    if isinstance(container, dict):
+        for key, val in container.items():
+            if key not in EXPRESSION_KEYS:
+                continue
+            yield from _walk_value(container, key, val, f"{label}.{key}")
+    elif isinstance(container, list):
+        for i, val in enumerate(container):
+            yield from _walk_value(container, i, val, f"{label}[{i}]")
+
+
+def _walk_value(parent: Any, key: Any, val: Any, label: str):
+    if isinstance(val, str):
+        yield (parent, key, val, label)
+    elif isinstance(val, list):
+        for i, item in enumerate(val):
+            yield from _walk_value(val, i, item, f"{label}[{i}]")
+
+
+def _validate_expressions(container: Dict[str, Any], label: str) -> None:
+    for _parent, _key, expr, where in _walk_expressions(container, label):
+        if not expr.strip():
+            raise AssemblyError(f"{where}: empty expression")
+        if FORBIDDEN_IN_EXPRESSION.search(expr):
+            raise AssemblyError(
+                f"{where}: expression {expr!r} may not contain statements, "
+                "braces, semicolons or include/use/import/echo/assert"
+            )
+
+
+@dataclass
+class ExpressionSlot:
+    """One expression string waiting for its value: where it sits and what it says."""
+
+    parent: Any  # the dict or list holding it
+    key: Any  # the key or index in ``parent``
+    expr: str
+    label: str  # human-readable location, e.g. "checks[3].point[2]"
+    rule: Optional[Dict[str, Any]]  # the owning rule, if any (None for a motion block)
+
+
+def collect_expression_slots(asm: Assembly) -> List[ExpressionSlot]:
+    """Every expression-valued number in the assembly's rules and motion blocks."""
+    slots: List[ExpressionSlot] = []
+    for i, rule in enumerate(asm.checks):
+        for parent, key, expr, label in _walk_expressions(rule, f"checks[{i}]"):
+            slots.append(ExpressionSlot(parent, key, expr, label, rule))
+    for part in asm.parts:
+        if part.motion:
+            for parent, key, expr, label in _walk_expressions(
+                part.motion, f"parts.{part.name}.motion"
+            ):
+                slots.append(ExpressionSlot(parent, key, expr, label, None))
+    return slots
+
+
+def apply_expression_values(slots: List[ExpressionSlot], results: List[Dict[str, Any]]) -> None:
+    """Substitute evaluated values into the slots.
+
+    ``results`` is what :func:`openscad_mcp.wrappers.collect_eval_results`
+    returns, one per slot in order. A slot whose expression did not evaluate
+    to a number or a vector of numbers marks its rule ``_unresolved`` with a
+    note instead of raising, so one bad expression yields one UNRESOLVED row.
+    Every rule that had expressions gets an ``_expressions`` map of
+    label -> {expr, value}, which the engine copies onto its rows.
+    """
+    for slot, res in zip(slots, results, strict=True):
+        value = res.get("value") if res.get("evaluated") else None
+        ok = _is_numeric_value(value)
+        if ok:
+            slot.parent[slot.key] = value
+        if slot.rule is not None:
+            record = slot.rule.setdefault("_expressions", {})
+            record[slot.label] = {"expr": slot.expr, "value": value if ok else None}
+            if not ok:
+                shown = "undef" if value is None else repr(value)
+                note = f"{slot.label}: expression {slot.expr!r} evaluated to {shown}, not a number"
+                prev = slot.rule.get("_unresolved")
+                slot.rule["_unresolved"] = f"{prev}; {note}" if prev else note
+        elif not ok:
+            raise AssemblyError(
+                f"{slot.label}: expression {slot.expr!r} evaluated to "
+                f"{'undef' if value is None else value!r}, not a number"
+            )
+
+
+def _is_numeric_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, list):
+        return all(_is_numeric_value(v) for v in value)
+    return False
 
 
 def parse_assembly(data: Dict[str, Any], scad_file: Optional[str] = None) -> Assembly:

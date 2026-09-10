@@ -126,7 +126,7 @@ unknown module and draws a blank scene.
 |------|-------------|
 | `check` | Relations between named parts, exported separately and never unioned: `mode=interference` (clear / contact / interference with penetration depth and a witness point), `clearance` (exact minimum distance with closest points), `contact` (area, normal, plane; `kind=static|sliding`), `alignment` (coaxial hole stacks across parts, misalignment, orphans), `motion` (rigid sweeps with a full-turn certificate), `rules` (run a versioned YAML/JSON check file; exit code 0/1/2). Every row carries the tessellation `$fn`, and distances inside its error bound are reported as unresolved rather than as numbers |
 
-Parts are given inline as `parts=[{name, code, place?, frame?, ghost?, mass_g?, motion?}]` or in a check file (`frames`, `quality`, `parts`, `checks`, `model`). `openscad-mcp check <file.yaml>` runs a check file from the shell with a meaningful exit code, so `make check` is one call.
+Parts are given inline as `parts=[{name, code, place?, frame?, ghost?, mass_g?, motion?}]` or in a check file (`frames`, `quality`, `parts`, `checks`, `model`). Any number in a rule may be a SCAD expression string (`point: "[BOLT_R, 0, BASE_H]"`) evaluated in the model's scope, so checks follow the parameters rather than a copy of them. `openscad-mcp check <file.yaml>` runs a check file from the shell with a meaningful exit code, so `make check` is one call.
 
 ### Export & Model Management
 

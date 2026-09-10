@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.1] - 2026-09-10
 
 ### Added
+- Expression-valued numbers in check files: any coordinate or limit in a rule
+  or motion block may be a SCAD expression string (`point: "[BOLT_R, 0,
+  BASE_H]"`, `range: [0, "SWING_DEG"]`) evaluated in the model's scope, with
+  `variables` applied, before the rules run. Rows echo `expressions`; an
+  expression that is not a number yields one UNRESOLVED row.
 - `mass` check rule: total mass limits (`max_g`, `min_g`), centre-of-mass
   offset from an axis or point (`com_within_mm`), and moment of inertia about
   an axis (`max_inertia_g_mm2`) over one part, a list, or the whole assembly,

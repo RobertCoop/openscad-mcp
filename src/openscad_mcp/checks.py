@@ -192,6 +192,17 @@ class RuleEngine:
     def run(self, rules: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for rule in rules if rules is not None else self.asm.checks:
+            if rule.get("_unresolved"):
+                rows.append(
+                    {
+                        "rule": rule["rule"],
+                        "subject": [],
+                        "status": "UNRESOLVED",
+                        "note": rule["_unresolved"],
+                        "expressions": rule.get("_expressions", {}),
+                    }
+                )
+                continue
             handler = getattr(self, f"rule_{rule['rule']}", None)
             if handler is None:
                 rows.append(
@@ -209,6 +220,8 @@ class RuleEngine:
                 elapsed = round(time.perf_counter() - t0, 3)
                 for r in produced:
                     r.setdefault("elapsed_s", elapsed)
+                    if rule.get("_expressions"):
+                        r["expressions"] = rule["_expressions"]
                 rows.extend(produced)
             except Exception as exc:  # one bad rule must not kill the report
                 rows.append(

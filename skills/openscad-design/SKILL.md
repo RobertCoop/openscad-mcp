@@ -123,6 +123,9 @@ check(scad_file="assembly.scad", mode="interference",
 - `rule: mass` in a check file limits total mass, centre-of-mass offset from an
   axis or point, and inertia about an axis, composed from the exported meshes
   with each part's `mass_g`, `material` or `density_g_cm3` (PLA if none, flagged).
+- Write coordinates and limits in check files as SCAD expressions of the model's
+  parameters (`point: "[BOLT_R, 0, BASE_H]"`, `min_mm: "GAP_MIN"`), never as
+  copied numbers: a copied number keeps passing after the parameter changes.
 - Every row carries `quality.fn`. A distance smaller than the tessellation error
   bound comes back `UNRESOLVED`; re-run with `quality="high"` or an integer `$fn`.
 - `measure(mode="probe")` answers "is there material at this point, and whose",
