@@ -220,6 +220,11 @@ def load_stl(path: Path | str) -> list[TriangleTuple]:
             return _parse_binary_stl(data)
         if b"facet" in data.lower():
             return _parse_ascii_stl(data)
+        if b"endsolid" in data.lower():
+            # OpenSCAD writes "solid X\nendsolid X" for a model with no
+            # geometry (an empty intersection, a difference that removed
+            # everything). That is a valid, empty mesh.
+            return []
         raise ValueError(
             f"File starts with 'solid' but contains no facets and is not a "
             f"valid binary STL: {file_path}"

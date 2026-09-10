@@ -2584,6 +2584,7 @@ class _ModelSource:
         self.path: Optional[Path] = None
         self.text: str = ""
         self.wrapper_dir: Optional[Path] = None
+        self.model_dir: Optional[Path] = None
         self.display_name: str = "<inline>"
         self._temp: Optional[Path] = None
         self._cleanup: List[Path] = []
@@ -2604,12 +2605,26 @@ class _ModelSource:
             self.path = Path(self.scad_file or "")
             if not self.path.exists():
                 raise FileNotFoundError(f"SCAD file not found: {self.scad_file}")
-            self.text = self.path.read_text(errors="replace")
-            # Wrapper programs inline the model text, so relative includes and
-            # imports must resolve from the model's own directory.
-            self.wrapper_dir = self.path.parent
+            # Wrapper programs live in the server temp dir (never write into
+            # the user's project). Relative include/use lines resolve through
+            # OPENSCADPATH, which gets the model's directory; relative
+            # import()/surface() paths are rewritten to absolute ones.
+            from .wrappers import absolutize_file_refs
+
+            self.model_dir = self.path.parent
+            self.text = absolutize_file_refs(
+                self.path.read_text(errors="replace"), self.model_dir
+            )
+            self.wrapper_dir = temp_dir_path
             self.display_name = self.path.name
         return self
+
+    def include_paths_for_wrapper(self, include_paths: Optional[List[str]]) -> List[str]:
+        """Caller include paths plus the model's own directory."""
+        paths = [str(p) for p in (include_paths or [])]
+        if self.model_dir is not None and str(self.model_dir) not in paths:
+            paths.append(str(self.model_dir))
+        return paths
 
     def __exit__(self, *exc: Any) -> None:
         for f in [self._temp, *self._cleanup]:
@@ -2621,16 +2636,11 @@ class _ModelSource:
                 pass
 
     def wrapper_file(self, wrapped: Any) -> Path:
-        """Write a wrapper program next to the model and register it for cleanup."""
+        """Write a wrapper program to the temp dir and register it for cleanup."""
         target_dir = self.wrapper_dir or Path(get_config().temp_dir)
-        path = target_dir / f".openscad-mcp-{self.prefix}-{uuid.uuid4().hex[:8]}.scad"
-        try:
-            path.write_text(wrapped.text)
-        except OSError:
-            # Read-only project directory: fall back to the temp dir. Relative
-            # includes may then fail to resolve, which the diagnostics report.
-            path = Path(get_config().temp_dir) / path.name
-            path.write_text(wrapped.text)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"wrapper-{self.prefix}-{uuid.uuid4().hex[:8]}.scad"
+        path.write_text(wrapped.text)
         self._cleanup.append(path)
         return path
 
@@ -2640,8 +2650,22 @@ class _ModelSource:
 
 
 def _rebase_diagnostics(diag: Diagnostics, wrapper_path: Path, wrapped: Any, display: str) -> None:
-    """Point wrapper-file diagnostics back at the model's own file and lines."""
+    """Point wrapper-file diagnostics back at the model's own file and lines.
+
+    Also drops the "X was assigned ... but was overwritten" warnings that the
+    wrapper's own variable injection provokes for the injected names.
+    """
     wname = wrapper_path.name
+    injected = set(getattr(wrapped, "injected", []) or [])
+    if injected:
+        diag.records = [
+            rec
+            for rec in diag.records
+            if not (
+                "was overwritten" in rec.message
+                and any(rec.message.startswith(f"{name} was assigned") for name in injected)
+            )
+        ]
     for rec in diag.records:
         if rec.file and (rec.file.endswith(wname) or rec.file == "<inline>"):
             rec.file = display
@@ -2654,8 +2678,44 @@ _measure_cache: Dict[str, Tuple[Any, Diagnostics]] = {}
 _MEASURE_CACHE_MAX = 32
 
 
+def _static_dependency_fingerprint(
+    text: str, base_dir: Path, include_paths: Optional[List[str]], limit: int = 400
+) -> List[str]:
+    """Stat every file reachable through include/use/import/surface references.
+
+    A static approximation of the ``-d`` closure, good enough to invalidate
+    cached measurements when a constants file or library changes. Each entry
+    is ``path|size|mtime_ns``; unresolvable references are skipped.
+    """
+    search_roots: List[Path] = [base_dir]
+    search_roots.extend(Path(p) for p in (include_paths or []))
+    search_roots.extend(_library_search_paths())
+    seen: Dict[str, str] = {}
+    queue: List[Tuple[str, Path]] = [(text, base_dir)]
+    while queue and len(seen) < limit:
+        current_text, current_dir = queue.pop()
+        for ref in extract_source_dependencies(current_text):
+            candidates = [current_dir / ref] + [root / ref for root in search_roots]
+            for cand in candidates:
+                try:
+                    if not cand.is_file():
+                        continue
+                    key = str(cand.resolve())
+                    if key in seen:
+                        break
+                    st = cand.stat()
+                    seen[key] = f"{key}|{st.st_size}|{st.st_mtime_ns}"
+                    if cand.suffix.lower() == ".scad":
+                        queue.append((cand.read_text(errors="replace"), cand.parent))
+                except OSError:
+                    continue
+                break
+    return sorted(seen.values())
+
+
 def _measure_cache_key(source: _ModelSource, variables, include_paths, extra: str = "") -> str:
     hasher = hashlib.sha256()
+    base_dir = source.model_dir or source.wrapper_dir or Path(get_config().temp_dir)
     if source.scad_content:
         _hash_field(hasher, source.scad_content.encode())
     else:
@@ -2664,6 +2724,8 @@ def _measure_cache_key(source: _ModelSource, variables, include_paths, extra: st
             _hash_field(hasher, f"{source.scad_file}|{st.st_size}|{st.st_mtime_ns}")
         except OSError:
             _hash_field(hasher, str(source.scad_file))
+    # Files the model pulls in: a constants file or library edit must miss.
+    _hash_field(hasher, _static_dependency_fingerprint(source.text, base_dir, include_paths))
     _hash_field(hasher, variables or {})
     _hash_field(hasher, include_paths or [])
     _hash_field(hasher, extra)
@@ -2698,14 +2760,23 @@ def _analyze_mesh_export(
         )
         diag = ev.diagnostics
         if ev.output_path is not None and ev.output_path.stat().st_size > 0:
-            stats = meshlib.analyze_stl(ev.output_path)
-            return stats, diag, None
+            return meshlib.analyze_stl(ev.output_path), diag, None
     finally:
         if stl_output.exists():
             stl_output.unlink()
 
-    # A 2D model or an empty one. Try a 2D export before giving up.
-    is_2d = any("2D" in w for w in diag.warnings) or diag.empty_output or diag.returncode != 0
+    # No geometry at all: OpenSCAD prints "Current top level object is empty"
+    # and exits 1 without a file. That is a legitimate answer (an empty
+    # intersection, a difference that removed everything), not a failure.
+    if diag.empty_output:
+        diag.records = [
+            r for r in diag.records if not r.message.startswith("OpenSCAD exited with status")
+        ]
+        diag.returncode = 0
+        return meshlib.analyze_triangles([]), diag, None
+
+    # A 2D model. Try a 2D export before giving up.
+    is_2d = any("2D" in w for w in diag.warnings) or diag.returncode != 0
     if is_2d:
         svg_output = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.svg"
         try:
@@ -2742,7 +2813,8 @@ def _measure_source(
         wrapped = part_wrapper(source.text, part_code, variables)
         wpath = source.wrapper_file(wrapped)
         stats, diag, _ = _analyze_mesh_export(
-            None, str(wpath), variables, include_paths, "part", apply_variables=False
+            None, str(wpath), variables, source.include_paths_for_wrapper(include_paths),
+            "part", apply_variables=False,
         )
         _rebase_diagnostics(diag, wpath, wrapped, source.display_name)
     elif source.scad_content:
@@ -2778,7 +2850,8 @@ def _section_polygons(
     wpath = source.wrapper_file(wrapped)
     try:
         ev = _evaluate_scad(
-            None, str(wpath), str(svg_output), None, None, include_paths, "export", "section"
+            None, str(wpath), str(svg_output), None, None,
+            source.include_paths_for_wrapper(include_paths), "export", "section",
         )
         _rebase_diagnostics(ev.diagnostics, wpath, wrapped, source.display_name)
         if ev.output_path is None:
@@ -3143,7 +3216,8 @@ async def render(
                     async with semaphore:
                         return await loop.run_in_executor(
                             None, _render_one_view, None, str(wpath), v, None, None, None,
-                            parsed_size, color_scheme, {}, include_paths, bbox, annotate,
+                            parsed_size, color_scheme, {}, src.include_paths_for_wrapper(include_paths),
+                            bbox, annotate,
                         )
 
                 results = await asyncio.gather(*[_one_part_view(v) for v in view_list2])
@@ -3287,6 +3361,9 @@ async def measure(
                         None, _measure_source, src, parsed_vars, include_paths
                     )
                 result.update(_stats_dict(stats, detailed))
+                if getattr(stats, "triangle_count", 1) == 0:
+                    result["empty"] = True
+                    result["note"] = "the model evaluates to no geometry"
                 result["mesh_health"] = diag.mesh_health()
                 result.update(diag.to_dict(include_records=False))
                 if mode == "mass":
@@ -3523,7 +3600,7 @@ async def validate(
                 async with semaphore:
                     ev = await loop.run_in_executor(
                         None, _evaluate_scad, None, str(wpath), null_output, "csg",
-                        None, include_paths, "validation", "predicates",
+                        None, src.include_paths_for_wrapper(include_paths), "validation", "predicates",
                     )
                 _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
             diag = ev.diagnostics
@@ -3644,7 +3721,7 @@ async def scad_eval(
             async with get_render_semaphore():
                 ev = await loop.run_in_executor(
                     None, _evaluate_scad, None, str(wpath), null_output, "csg",
-                    None, include_paths, "evaluation", "eval",
+                    None, src.include_paths_for_wrapper(include_paths), "evaluation", "eval",
                 )
             _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         diag = ev.diagnostics

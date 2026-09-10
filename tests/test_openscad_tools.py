@@ -586,23 +586,27 @@ class TestMeasureModel:
         assert result["bbox_max"] == [10.0, 10.0, 5.0]
 
     async def test_empty_model(self, configured_env):
-        """A model that exports no geometry should return an error saying so.
+        """A model that exports no geometry is an empty result, not a failure.
 
-        OpenSCAD writes no export file at all and warns about an empty top
-        level object, so there is nothing for the mesh analyser to read.
+        OpenSCAD writes no export file at all, prints "Current top level
+        object is empty" and exits 1. An empty intersection or a difference
+        that removed everything is a legitimate answer (zero volume), so the
+        tool reports it as empty rather than raising.
         """
         def mock_run(cmd, **kwargs):
             result = Mock()
-            result.returncode = 0
-            result.stderr = "WARNING: Current top level object is empty.\n"
+            result.returncode = 1
+            result.stderr = "Current top level object is empty.\n"
             result.stdout = ""
             return result
 
         with patch("openscad_mcp.server.subprocess.run", side_effect=mock_run):
             result = await measure_fn(scad_content="// empty model")
 
-        assert result["success"] is False
-        assert "empty" in result["error"].lower()
+        assert result["success"] is True
+        assert result["empty"] is True
+        assert result["volume"] == 0
+        assert "no geometry" in result["note"]
 
     async def test_subprocess_failure(self, configured_env):
         """When OpenSCAD returns a nonzero exit code, analysis should fail."""

@@ -103,8 +103,9 @@ class TestWrappers:
 
     def test_section_wrapper_shape(self):
         text = section_wrapper("include <BOSL2/std.scad>\ncube(1);\n", "z", 1.5, {"W": 40}).text
-        assert text.startswith("include <BOSL2/std.scad>\nmodule __model()")
-        assert "W = 40;" in text
+        # includes hoisted first, then the override at file scope, then the module
+        assert text.startswith("include <BOSL2/std.scad>\nW = 40;\nmodule __model()")
+        assert text.count("W = 40;") == 2  # file scope and module scope
         assert "projection(cut = true)" in text
 
     def test_hoist_source(self):
@@ -474,6 +475,76 @@ class TestToolsReal:
         ref = out["references"][0]
         assert ref["found"] is True, out
         assert ref["resolved_path"].endswith("params.scad")
+
+    async def test_variables_reach_derived_constants_in_hoisted_includes(self, project):
+        """W1: a constants file included by the model defines D = K * 2; overriding K
+        must change D (the derived value was computed at file scope)."""
+        (project / "consts.scad").write_text("K = 1;\nD = K * 2;\n")
+        part = project / "derived.scad"
+        part.write_text(
+            "include <consts.scad>\nE = K + 100;\nmodule box() { cube([K, D, E]); }\nbox();\n"
+        )
+        ev = await scad_eval_fn(
+            expressions=["K", "D", "E"], scad_file=str(part), variables={"K": 5}
+        )
+        assert [r["value"] for r in ev["results"]] == [5, 10, 105], ev
+        assert not ev["warnings"], ev["warnings"]  # our own override must not warn
+        m = await measure_fn(
+            scad_file=str(part),
+            mode="parts",
+            parts=[{"name": "box", "code": "box();"}],
+            variables={"K": 5},
+        )
+        assert m["parts"][0]["dimensions"] == pytest.approx([5, 10, 105]), m
+
+    async def test_empty_geometry_measures_as_empty(self, project):
+        """W3: a model with no geometry is an empty result, not an exception."""
+        out = await measure_fn(
+            scad_content="intersection() { cube(1); translate([5,0,0]) cube(1); }"
+        )
+        assert out.get("empty") is True, out
+        assert out["volume"] == 0
+
+    async def test_measure_cache_invalidates_on_constants_change(self, project):
+        """W4: the in-process measure cache must miss when an included file changes."""
+        (project / "consts2.scad").write_text("S = 2;\n")
+        part = project / "uses_consts.scad"
+        part.write_text("include <consts2.scad>\ncube(S);\n")
+        a = await measure_fn(scad_file=str(part))
+        assert a["volume"] == pytest.approx(8)
+        (project / "consts2.scad").write_text("S = 3;\n")
+        b = await measure_fn(scad_file=str(part))
+        assert b["volume"] == pytest.approx(27), b
+
+    async def test_wrappers_never_written_into_project(self, project):
+        """W5: composite modes must not need write access to the model directory."""
+        (project / "sub").mkdir(exist_ok=True)
+        (project / "sub" / "cfg.scad").write_text("W = 4;\n")
+        part = project / "sub" / "p.scad"
+        part.write_text(
+            "include <cfg.scad>\ninclude <../params.scad>\nmodule b() { cube([W, wall, 1]); }\nb();\n"
+        )
+        before = set(project.rglob("*"))
+        m = await measure_fn(
+            scad_file=str(part), mode="parts", parts=[{"name": "b", "code": "b();"}]
+        )
+        assert m["success"] is True, m
+        assert m["parts"][0]["dimensions"] == pytest.approx([4, 2, 1])
+        assert set(project.rglob("*")) == before
+
+    async def test_includes_resolver_edge_cases(self, project):
+        """W6: ./ references, ../ references, and a short name that is a suffix of another dep."""
+        (project / "lib").mkdir(exist_ok=True)
+        (project / "lib" / "ms.scad").write_text("module ms(){}\n")
+        (project / "lib" / "params.scad").write_text("plib = 1;\n")
+        f = project / "lib" / "m.scad"
+        f.write_text("include <./params.scad>\nuse <../params.scad>\nuse <ms.scad>\ncube(1);\n")
+        out = await validate_fn(scad_file=str(f), mode="includes")
+        by_ref = {r["reference"]: r for r in out["references"]}
+        assert by_ref["./params.scad"]["resolved_path"].endswith("lib/params.scad"), out
+        assert by_ref["../params.scad"]["resolved_path"].endswith("proj/params.scad"), out
+        assert by_ref["ms.scad"]["resolved_path"].endswith("lib/ms.scad"), out
+        assert out["valid"] is True, out
 
     async def test_every_resource_reads(self, project):
         resources = await server.mcp.get_resources()

@@ -37,7 +37,8 @@ Facts about that construction, verified on 2021.01:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 MODEL_MODULE = "__model"
@@ -124,6 +125,7 @@ class WrappedSource:
 
     text: str
     body_line_offset: int
+    injected: List[str] = field(default_factory=list)
 
     def rebase_line(self, line: int) -> Optional[int]:
         """Map a wrapper line number back to the model's own numbering."""
@@ -140,6 +142,14 @@ def build_wrapper(
     """Build ``__model()`` around the model text with variables injected."""
     header, body = hoist_source(source_text)
     lines: List[str] = list(header)
+    # Variables go in BOTH scopes. Constants defined in a hoisted include
+    # live at file scope, and anything derived from them there (D = K * 2)
+    # is computed with the file-scope value, so the override must be at
+    # file scope too. The model's own top-level assignments are inlined in
+    # the module and shadow file scope, so the override is repeated there.
+    assignments = variable_assignments(variables)
+    if assignments:
+        lines.extend(assignments.rstrip("\n").splitlines())
     lines.append(f"module {MODEL_MODULE}() {{")
     body_line_offset = len(lines)
     text = (
@@ -147,18 +157,42 @@ def build_wrapper(
         + "\n"
         + body.rstrip("\n")
         + "\n"
-        + _indent(variable_assignments(variables))
+        + _indent(assignments)
         + _indent(extra_body)
         + "}\n"
         + tail
     )
-    return WrappedSource(text=text, body_line_offset=body_line_offset)
+    return WrappedSource(
+        text=text, body_line_offset=body_line_offset, injected=list((variables or {}).keys())
+    )
 
 
 def _indent(text: str, prefix: str = "    ") -> str:
     if not text:
         return ""
     return "".join(prefix + line + "\n" for line in text.rstrip("\n").splitlines())
+
+
+_FILE_REF_RE = re.compile(r'(\b(?:import|surface)\s*\(\s*(?:file\s*=\s*)?)"([^"\n]+)"')
+
+
+def absolutize_file_refs(text: str, base_dir: Path) -> str:
+    """Rewrite relative ``import("x.stl")`` / ``surface(file="h.dat")`` paths.
+
+    A wrapper program lives in the server temp dir, so relative file
+    references in the inlined model text would resolve against the wrong
+    directory. ``include``/``use`` are looked up through OPENSCADPATH (the
+    model's directory is added there), but ``import`` and ``surface`` are
+    resolved relative to the current file only, hence the rewrite.
+    """
+
+    def _sub(m: "re.Match[str]") -> str:
+        ref = m.group(2)
+        if Path(ref).is_absolute():
+            return m.group(0)
+        return f'{m.group(1)}"{(base_dir / ref).as_posix()}"'
+
+    return _FILE_REF_RE.sub(_sub, text)
 
 
 SECTION_AXES = {"x", "y", "z"}

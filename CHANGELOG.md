@@ -49,6 +49,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any file including BOSL2 failed with a parser error inside the library,
   because a library's `use <>` is illegal inside a module body. Diagnostics
   from wrapper runs are mapped back to the model's own file and line numbers.
+- Variables passed to composite modes now reach constants derived from them
+  in a hoisted include (a constants file's `D = K * 2` follows `K`): the
+  override is injected at file scope as well as in the wrapper module, and
+  the resulting "was overwritten" warnings for injected names are dropped.
+- Wrapper programs are written to the server temp dir, never into the
+  user's project; the model's directory is added to OPENSCADPATH and
+  relative `import()`/`surface()` paths are rewritten to absolute ones.
+- The in-process measurement cache is keyed on the static dependency
+  closure (every include/use/import/surface reachable from the model), so
+  editing a constants file invalidates cached numbers.
+- A model that evaluates to no geometry (an empty intersection, a
+  difference that removed everything) is reported by `measure` as
+  `empty: true` with zero volume instead of an error; a facet-free STL
+  loads as an empty mesh.
 - `validate(mode=includes)` resolves parent-relative references such as
   `../../config/x.scad` (they were reported as not found).
 - Empty sections now say when the model only instantiates geometry under
