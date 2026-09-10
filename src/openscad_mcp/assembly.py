@@ -355,7 +355,48 @@ def _validate_check(rule: Dict[str, Any], index: int, part_names: List[str]) -> 
         val = rule.get(key)
         if val is not None and val != "all" and val not in part_names:
             raise AssemblyError(f"checks[{index}]: unknown part '{val}' in {key}")
+    if kind == "mass":
+        _validate_mass_rule(rule, index, part_names)
     return rule
+
+
+def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str]) -> None:
+    names = rule.get("parts")
+    if names not in (None, "all"):
+        if not isinstance(names, list) or not names:
+            raise AssemblyError(f"checks[{index}]: mass.parts must be 'all' or a list of names")
+        for nm in names:
+            if nm not in part_names:
+                raise AssemblyError(f"checks[{index}]: unknown part '{nm}' in parts")
+    for key in ("max_g", "min_g", "com_within_mm", "max_inertia_g_mm2", "density_g_cm3"):
+        val = rule.get(key)
+        if val is not None:
+            try:
+                if float(val) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise AssemblyError(
+                    f"checks[{index}]: mass.{key} must be a non-negative number"
+                ) from None
+    axis, point = rule.get("axis"), rule.get("point")
+    if axis is not None and not (
+        isinstance(axis, (list, tuple))
+        and len(axis) == 2
+        and all(isinstance(v, (list, tuple)) and len(v) == 3 for v in axis)
+    ):
+        raise AssemblyError(f"checks[{index}]: mass.axis must be [[x,y,z],[dx,dy,dz]]")
+    if axis is not None and all(float(v) == 0.0 for v in axis[1]):
+        raise AssemblyError(f"checks[{index}]: mass.axis direction must not be zero")
+    if point is not None and not (isinstance(point, (list, tuple)) and len(point) == 3):
+        raise AssemblyError(f"checks[{index}]: mass.point must be [x,y,z]")
+    if rule.get("com_within_mm") is not None and axis is None and point is None:
+        raise AssemblyError(f"checks[{index}]: mass.com_within_mm needs axis or point")
+    if rule.get("max_inertia_g_mm2") is not None and axis is None:
+        raise AssemblyError(f"checks[{index}]: mass.max_inertia_g_mm2 needs axis")
+    if not any(
+        rule.get(k) is not None for k in ("max_g", "min_g", "com_within_mm", "max_inertia_g_mm2")
+    ):
+        return  # facts-only row
 
 
 def parse_assembly(data: Dict[str, Any], scad_file: Optional[str] = None) -> Assembly:

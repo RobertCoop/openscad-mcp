@@ -289,3 +289,148 @@ class TestToolUnwrapping:
 
         src = Path(server.__file__).read_text()
         assert not re.search(r"\b(check|measure|render|validate)\.fn\(", src)
+
+
+class TestMassRule:
+    """The mass rule over box meshes: no OpenSCAD needed."""
+
+    @staticmethod
+    def _engine(parts, meshes):
+        from openscad_mcp.assembly import Assembly
+        from openscad_mcp.checks import RuleEngine
+
+        return RuleEngine(Assembly(parts=parts), meshes, Quality(fn=32))
+
+    @staticmethod
+    def _box(lo, hi, name):
+        from tests.test_geom import box
+
+        return box(lo, hi, name)
+
+    def _stack(self):
+        from openscad_mcp.assembly import Part
+
+        meshes = {
+            "a": self._box((0, 0, 0), (10, 10, 10), "a"),  # 1 cm3 PLA = 1.24 g
+            "b": self._box((20, 0, 0), (30, 10, 10), "b"),  # 1 cm3 steel = 7.85 g
+            "m": self._box((0, 0, 20), (2, 2, 22), "m"),  # purchased, 5 g
+        }
+        parts = [
+            Part("a", "a();"),
+            Part("b", "b();", material="steel"),
+            Part("m", "m();", mass_g=5.0, ghost=True),
+        ]
+        return parts, meshes
+
+    def test_total_mass_pass_and_fail(self):
+        parts, meshes = self._stack()
+        eng = self._engine(parts, meshes)
+        row = eng.run([{"rule": "mass", "part": "a", "max_g": 1.3}])[0]
+        assert row["check"] == "total"
+        assert row["status"] == "PASS"
+        assert row["magnitude"]["mass_g"] == pytest.approx(1.24)
+        assert "default" in row["density_source"]["a"]
+        row = eng.run([{"rule": "mass", "parts": ["a", "b"], "max_g": 5}])[0]
+        assert row["status"] == "FAIL"
+        assert row["magnitude"]["mass_g"] == pytest.approx(9.09)
+        assert row["subject"] == ["a", "b"]
+
+    def test_whole_assembly_includes_purchased_mass(self):
+        parts, meshes = self._stack()
+        row = self._engine(parts, meshes).run([{"rule": "mass", "min_g": 14, "max_g": 15}])[0]
+        assert row["status"] == "PASS"
+        assert row["magnitude"]["mass_g"] == pytest.approx(14.09)
+        assert row["density_source"]["m"] == "mass_g=5.0 (given)"
+
+    def test_com_offset_from_axis_and_point(self):
+        parts, meshes = self._stack()
+        eng = self._engine(parts, meshes)
+        row = eng.run(
+            [{"rule": "mass", "com_within_mm": 1, "axis": [[15, 5, 0], [0, 0, 1]]}]
+        )[0]
+        assert row["check"] == "com_offset"
+        assert row["status"] == "FAIL"
+        assert row["magnitude"]["offset_mm"] == pytest.approx(1.4462, abs=1e-3)
+        assert row["at"] == row["magnitude"]["center_of_mass"]
+        row = eng.run([{"rule": "mass", "part": "a", "com_within_mm": 0.5, "point": [5, 5, 5]}])[0]
+        assert row["status"] == "PASS"
+        assert row["magnitude"]["offset_mm"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_inertia_about_axis(self):
+        parts, meshes = self._stack()
+        row = self._engine(parts, meshes).run(
+            [{"rule": "mass", "part": "a", "max_inertia_g_mm2": 80, "axis": [[0, 0, 0], [0, 0, 1]]}]
+        )[0]
+        # m a^2/6 about the central axis + m d^2 with d^2 = 50: 20.67 + 62 = 82.67 g mm^2
+        assert row["check"] == "inertia"
+        assert row["magnitude"]["inertia_g_mm2"] == pytest.approx(82.667, abs=1e-3)
+        assert row["status"] == "FAIL"
+
+    def test_facts_only_row_and_rule_density_override(self):
+        parts, meshes = self._stack()
+        eng = self._engine(parts, meshes)
+        row = eng.run([{"rule": "mass"}])[0]
+        assert row["check"] == "facts"
+        assert row["status"] == "PASS"
+        assert [p["name"] for p in row["magnitude"]["parts"]] == ["a", "b", "m"]
+        row = eng.run([{"rule": "mass", "part": "a", "material": "steel", "max_g": 8}])[0]
+        assert row["magnitude"]["mass_g"] == pytest.approx(7.85)
+        assert row["density_source"]["a"] == "material=steel (rule)"
+
+    def test_open_mesh_is_unresolved(self):
+        from openscad_mcp.assembly import Part
+        from openscad_mcp.geom import Mesh
+
+        tris = self._box((0, 0, 0), (10, 10, 10), "a").triangles[:-1]  # drop one face
+        row = self._engine([Part("a", "a();")], {"a": Mesh(tris, "a")}).run(
+            [{"rule": "mass", "max_g": 100}]
+        )[0]
+        assert row["status"] == "UNRESOLVED"
+        assert "not watertight" in row["note"]
+
+    def test_missing_mesh_without_mass_is_unresolved(self):
+        from openscad_mcp.assembly import Part
+
+        row = self._engine([Part("a", "a();")], {}).run([{"rule": "mass", "max_g": 1}])[0]
+        assert row["status"] == "UNRESOLVED"
+        assert exit_code([row]) == 2
+
+    @pytest.mark.parametrize(
+        "bad, message",
+        [
+            ({"rule": "mass", "parts": ["zz"]}, "unknown part"),
+            ({"rule": "mass", "com_within_mm": 1}, "needs axis or point"),
+            ({"rule": "mass", "max_inertia_g_mm2": 1}, "needs axis"),
+            ({"rule": "mass", "axis": [[0, 0, 0], [0, 0, 0]]}, "must not be zero"),
+            ({"rule": "mass", "max_g": -1}, "non-negative"),
+            ({"rule": "mass", "point": [1, 2]}, "mass.point must be"),
+        ],
+    )
+    def test_grammar_rejects_bad_rules(self, bad, message):
+        from openscad_mcp.assembly import AssemblyError, parse_assembly
+
+        with pytest.raises(AssemblyError, match=message):
+            parse_assembly({"parts": [{"name": "a", "code": "a();"}], "checks": [bad]})
+
+
+@needs_openscad
+class TestMassRuleReal:
+    async def test_mass_rule_through_check_tool(self, project):
+        r = await check_fn(
+            scad_file=str(project / "asm.scad"),
+            mode="rules",
+            parts=[{"name": "a", "code": "a();", "material": "PLA"}, {"name": "post", "code": "post();"}],
+            checks=[
+                {"rule": "mass", "part": "a", "max_g": 1.3, "why": "the block must stay light"},
+                {"rule": "mass", "com_within_mm": 0.01, "point": [5, 5, 5], "part": "a"},
+                {"rule": "mass", "min_g": 1.0, "max_g": 1.2},
+            ],
+            quality=32,
+        )
+        assert r["success"] is True, r
+        rows = [f for f in r["findings"] if f["rule"] == "mass"]
+        assert [x["status"] for x in rows] == ["PASS", "PASS", "FAIL"]
+        assert rows[0]["magnitude"]["mass_g"] == pytest.approx(1.24, abs=1e-3)
+        assert rows[0]["why"] == "the block must stay light"
+        assert rows[2]["magnitude"]["mass_g"] > 1.2
+        assert r["exit_code"] == 1

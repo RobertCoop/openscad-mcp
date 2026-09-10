@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import geom
-from .assembly import Assembly, Part, pairs_for
+from .assembly import Assembly, pairs_for
 
 Vec3 = Tuple[float, float, float]
 
@@ -617,15 +617,194 @@ class RuleEngine:
             rows.append({"rule": "print", "subject": [name], "status": "PASS", "facts": facts})
         return rows
 
+    # -- mass ------------------------------------------------------------------
+
+    def _mass_props(self, name: str, material: Optional[str], density: Optional[float]):
+        """Mass properties of one part, computed once per (part, density source).
+
+        Returns ``(props, source, note)``. ``props`` is None when the part has
+        no mesh and no ``mass_g``. A part's own ``mass_g`` wins over any
+        density; then its own ``density_g_cm3`` / ``material``; then the
+        rule's ``density_g_cm3`` / ``material``; then PLA, flagged as a
+        default so the reader knows the number is an assumption.
+        """
+        from . import massprops
+
+        part = self.asm.part(name)
+        key = (name, material, density)
+        cache = getattr(self, "_massprops_cache", None)
+        if cache is None:
+            cache = self._massprops_cache = {}
+        if key in cache:
+            return cache[key]
+        mesh = self.meshes.get(name)
+        has_mesh = mesh is not None and len(mesh.triangles) > 0
+        note = None
+        if part.mass_g is not None:
+            source = f"mass_g={part.mass_g} (given)"
+            if has_mesh:
+                try:
+                    props = massprops.mass_properties(mesh.triangles, mass_g=part.mass_g)
+                except ValueError:
+                    lo, hi = mesh.bbox_min, mesh.bbox_max
+                    centre = tuple((lo[i] + hi[i]) / 2 for i in range(3))
+                    props = massprops.point_mass(part.mass_g, centre)
+                    note = "mesh encloses no volume; mass placed at its bbox centre"
+            else:
+                props = massprops.point_mass(part.mass_g, (0.0, 0.0, 0.0))
+                note = "no mesh; mass placed at the origin"
+        elif not has_mesh:
+            props, source = None, "no mesh and no mass_g"
+        else:
+            dens = part.density_g_cm3 if part.density_g_cm3 is not None else density
+            mat = part.material or material
+            if dens is not None:
+                source = f"density_g_cm3={dens}"
+                if part.density_g_cm3 is None:
+                    source += " (rule)"
+            elif mat:
+                source = f"material={mat}" + ("" if part.material else " (rule)")
+            else:
+                mat, source = "PLA", "material=PLA (default, no material given)"
+            props = massprops.mass_properties(mesh.triangles, density_g_cm3=dens, material=mat)
+        cache[key] = (props, source, note)
+        return cache[key]
+
     def rule_mass(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return [
-            {
+        """Mass, centre of mass and inertia limits over one part, several, or all.
+
+        Keys: ``part`` | ``parts`` (default: every part); ``max_g`` /
+        ``min_g``; ``com_within_mm`` of ``point`` or of the line ``axis``
+        ``[[point],[direction]]``; ``max_inertia_g_mm2`` about ``axis``;
+        ``material`` / ``density_g_cm3`` as the fallback density. A part
+        whose mesh is not watertight makes the row UNRESOLVED: the integral
+        is exact only over a closed surface.
+        """
+        from . import massprops
+
+        if rule.get("part") is not None:
+            names = [str(rule["part"])]
+        elif rule.get("parts") not in (None, "all"):
+            names = [str(n) for n in rule["parts"]]
+        else:
+            names = self.asm.names()
+        material = rule.get("material")
+        density = rule.get("density_g_cm3")
+        density = float(density) if density is not None else None
+        why = rule.get("why", "")
+
+        entries = []
+        sources: Dict[str, str] = {}
+        notes: List[str] = []
+        unresolved: List[str] = []
+        for name in names:
+            props, source, note = self._mass_props(name, material, density)
+            sources[name] = source
+            if note:
+                notes.append(f"{name}: {note}")
+            if props is None:
+                unresolved.append(f"{name}: {source}")
+                continue
+            if not props.is_watertight:
+                unresolved.append(f"{name}: mesh is not watertight, mass integral unreliable")
+            entries.append((name, props))
+
+        def row(check: str, magnitude: Dict[str, Any], status: str, at=None) -> Dict[str, Any]:
+            r: Dict[str, Any] = {
                 "rule": "mass",
-                "subject": [],
-                "status": "UNRESOLVED",
-                "note": "mass rules are evaluated by measure(mode=mass); not part of check",
+                "subject": list(names),
+                "check": check,
+                "status": status,
+                "magnitude": magnitude,
+                "quality": self.quality.to_dict(),
+                "tier": "python",
+                "density_source": sources,
             }
-        ]
+            if at is not None:
+                r["at"] = _round_vec(at)
+            if notes:
+                r["note"] = "; ".join(notes)
+            if why:
+                r["why"] = why
+            return r
+
+        if not entries or unresolved:
+            r = row("mass", {}, "UNRESOLVED")
+            r["note"] = "; ".join(unresolved + notes) or "no part has a mesh or a mass_g"
+            return [r]
+
+        composed = massprops.compose(entries)
+        total = float(composed["total_mass_g"])
+        com = _v3(composed["center_of_mass"])
+        rows: List[Dict[str, Any]] = []
+
+        max_g, min_g = rule.get("max_g"), rule.get("min_g")
+        if max_g is not None or min_g is not None:
+            mag: Dict[str, Any] = {"mass_g": round(total, 4)}
+            ok = True
+            if max_g is not None:
+                mag["max_g"] = float(max_g)
+                ok = ok and total <= float(max_g)
+            if min_g is not None:
+                mag["min_g"] = float(min_g)
+                ok = ok and total >= float(min_g)
+            rows.append(row("total", mag, "PASS" if ok else "FAIL", at=com))
+
+        axis = rule.get("axis")
+        point = rule.get("point")
+        within = rule.get("com_within_mm")
+        if within is not None:
+            if axis is not None:
+                p0, d = _v3(axis[0]), _v3(axis[1])
+                dn = math.sqrt(sum(x * x for x in d))
+                d = (d[0] / dn, d[1] / dn, d[2] / dn)
+                rel = (com[0] - p0[0], com[1] - p0[1], com[2] - p0[2])
+                along = sum(rel[i] * d[i] for i in range(3))
+                perp = [rel[i] - along * d[i] for i in range(3)]
+                offset = math.sqrt(sum(x * x for x in perp))
+                ref: Dict[str, Any] = {"axis": [list(p0), list(d)]}
+            else:
+                p0 = _v3(point)
+                offset = math.dist(com, p0)
+                ref = {"point": list(p0)}
+            mag = {
+                "offset_mm": round(offset, 4),
+                "max_mm": float(within),
+                "center_of_mass": _round_vec(com),
+                "mass_g": round(total, 4),
+                **ref,
+            }
+            rows.append(
+                row("com_offset", mag, "PASS" if offset <= float(within) else "FAIL", at=com)
+            )
+
+        max_i = rule.get("max_inertia_g_mm2")
+        if max_i is not None and axis is not None:
+            p0, d = _v3(axis[0]), _v3(axis[1])
+            inertia = sum(props.inertia_about_axis(p0, d) for _n, props in entries)
+            mag = {
+                "inertia_g_mm2": round(inertia, 3),
+                "inertia_kg_m2": inertia * 1e-9,
+                "max_g_mm2": float(max_i),
+                "axis": [list(p0), list(d)],
+            }
+            rows.append(row("inertia", mag, "PASS" if inertia <= float(max_i) else "FAIL", at=com))
+
+        if not rows:
+            facts = {
+                "mass_g": round(total, 4),
+                "center_of_mass": _round_vec(com),
+                "parts": [
+                    {
+                        "name": e["name"],
+                        "mass_g": round(e["mass_g"], 4),
+                        "mass_fraction": round(e["mass_fraction"], 4),
+                    }
+                    for e in composed["parts"]
+                ],
+            }
+            rows.append(row("facts", facts, "PASS", at=com))
+        return rows
 
 
 def exit_code(rows: List[Dict[str, Any]]) -> int:

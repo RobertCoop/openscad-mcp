@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.1] - 2026-09-10
 
 ### Added
+- `mass` check rule: total mass limits (`max_g`, `min_g`), centre-of-mass
+  offset from an axis or point (`com_within_mm`), and moment of inertia about
+  an axis (`max_inertia_g_mm2`) over one part, a list, or the whole assembly,
+  composed exactly from the per-part meshes with each part's `mass_g`,
+  `material` or `density_g_cm3`. Rows carry `density_source`; open meshes
+  are UNRESOLVED. It previously always returned UNRESOLVED.
 - Published to PyPI: install with `uvx openscad-mcp`. A GitHub Actions
   workflow (`publish.yml`) builds, smoke-tests and uploads on every `v*`
   tag through PyPI trusted publishing; `ci.yml` runs the tests and a

@@ -165,5 +165,22 @@ checks:
     max_unsupported_reach_mm: 2.0
     why: the plate must print without supports
 
-  # mass is accepted in the grammar but is not evaluated here; it always
-  # reports UNRESOLVED. Use measure(mode=mass) for masses and centre of mass.
+  # mass: weight, centre of mass and inertia from the exported meshes. Each
+  # part's own mass_g wins, then its material / density_g_cm3, then the
+  # rule's, then PLA (flagged as a default in density_source). Omit part and
+  # parts for the whole assembly; give none of the limits for the raw facts.
+  - rule: mass
+    max_g: 80
+    why: the whole stack must stay under the shipping-weight budget
+
+  - rule: mass
+    part: platter
+    com_within_mm: 0.5        # of the line axis, or of a point: [x, y, z]
+    axis: [[0, 0, 0], [0, 0, 1]]
+    why: an off-centre platter wobbles on the spindle
+
+  - rule: mass
+    part: platter
+    max_inertia_g_mm2: 4000   # about axis; the row also reports kg m^2
+    axis: [[0, 0, 0], [0, 0, 1]]
+    why: the stepper must start the platter without missing steps

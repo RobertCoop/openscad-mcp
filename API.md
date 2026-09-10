@@ -724,8 +724,23 @@ checks:
     layer_height_mm: 0.2
 ```
 
-`mass` is accepted as a rule name but always returns UNRESOLVED; use
-`measure(mode="mass")` instead.
+```yaml
+  - rule: mass
+    part: platter             # or parts: [a, b]; omit both for the whole assembly
+    max_g: 40                 # each limit given adds one row; none = a facts row
+    min_g: 5
+    com_within_mm: 0.5        # centre of mass within this of `axis` or `point`
+    axis: [[0, 0, 0], [0, 0, 1]]
+    max_inertia_g_mm2: 4000   # about `axis`; the row also carries kg m^2
+    material: PLA             # fallback density for parts that give none
+```
+
+Mass comes from the exported meshes by exact tetrahedral integration. A
+part's own `mass_g` wins (a purchased part), then its `material` or
+`density_g_cm3`, then the rule's, then PLA; every row carries a
+`density_source` map so a defaulted density is visible. A part whose mesh is
+not watertight, or that has neither a mesh nor a `mass_g`, makes the row
+UNRESOLVED rather than a number. `at` is the centre of mass.
 
 ### The row shape
 
