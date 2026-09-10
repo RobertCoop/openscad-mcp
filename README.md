@@ -17,11 +17,17 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gi
 
 ### Claude Code
 
+`--refresh-package openscad-mcp` makes uv re-resolve the package from GitHub
+on every start, so a new release is picked up automatically the next time the
+server launches. Drop the flag to pin to whatever uv has cached, or add
+`@v0.6.0` after the URL to pin a release.
+
+
 Add the server with a single command:
 
 ```bash
 claude mcp add openscad --transport stdio -- \
-  uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+  uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 ```
 
 Or, if OpenSCAD is not on your PATH:
@@ -29,7 +35,7 @@ Or, if OpenSCAD is not on your PATH:
 ```bash
 claude mcp add openscad --transport stdio \
   --env OPENSCAD_PATH=/path/to/openscad -- \
-  uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+  uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 ```
 
 Use the `--scope` flag to control where the configuration is saved:
@@ -54,6 +60,7 @@ Add to your configuration file:
       "command": "uv",
       "args": [
         "run",
+        "--refresh-package", "openscad-mcp",
         "--with", "git+https://github.com/quellant/openscad-mcp.git",
         "openscad-mcp"
       ],
@@ -78,6 +85,7 @@ Add a `.mcp.json` file to your project root:
       "command": "uv",
       "args": [
         "run",
+        "--refresh-package", "openscad-mcp",
         "--with", "git+https://github.com/quellant/openscad-mcp.git",
         "openscad-mcp"
       ]
@@ -90,7 +98,7 @@ Add a `.mcp.json` file to your project root:
 
 ```bash
 # Run directly from GitHub (no install required)
-uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 
 # Or clone and run locally
 git clone https://github.com/quellant/openscad-mcp.git
@@ -359,7 +367,7 @@ export OPENSCAD_PATH=/path/to/openscad
 
 ```bash
 # Verify the server starts correctly
-uv run --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
 
 # In Claude Code, check MCP status
 /mcp

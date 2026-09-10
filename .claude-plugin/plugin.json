@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "openscad-mcp",
   "displayName": "OpenSCAD MCP",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Render, measure, validate, and export OpenSCAD models from Claude Code, with a skill that teaches the measure-before-you-look design loop for 3D-printable parts.",
   "author": {
     "name": "Coop",

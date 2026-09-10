@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Nothing yet
+
+## [0.6.0] - 2026-09-10
+
+Assemblies with part identity, a shared mesh kernel, features, printability,
+a purchased-parts catalog, and the consolidated 12-tool surface. This
+release also contains the Phase 0 correctness and security fixes and the
+Phase 1-2 consolidation that followed v0.3.0.
+
 ### Breaking
 - `render_single`, `render_perspectives` and `compare_renders` are replaced by
   one `render` tool with `mode=views|section|parts|compare`. `validate_scad`
