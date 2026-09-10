@@ -110,25 +110,29 @@ unknown module and draws a blank scene.
 |------|-------------|
 | `render` | Images with a text digest before each one (camera, view direction, scale, bbox). `mode=views` (one image per view, or a custom camera), `mode=section` (exact cross-section with a scale bar), `mode=parts` (each part in its own colour, `isolate` ghosts the rest), `mode=compare` (before/after). `grounded=true` gives an orthographic view with a stated mm/px scale; `annotate=true` adds a scale bar, axis triad and bbox dimensions |
 
+### Assemblies
+
+| Tool | Description |
+|------|-------------|
+| `check` | Relations between named parts, exported separately and never unioned: `mode=interference` (clear / contact / interference with penetration depth and a witness point), `clearance` (exact minimum distance with closest points), `contact` (area, normal, plane; `kind=static|sliding`), `alignment` (coaxial hole stacks across parts, misalignment, orphans), `motion` (rigid sweeps with a full-turn certificate), `rules` (run a versioned YAML/JSON check file; exit code 0/1/2). Every row carries the tessellation `$fn`, and distances inside its error bound are reported as unresolved rather than as numbers |
+
+Parts are given inline as `parts=[{name, code, place?, frame?, ghost?, mass_g?, motion?}]` or in a check file (`frames`, `quality`, `parts`, `checks`, `model`). `openscad-mcp check <file.yaml>` runs a check file from the shell with a meaningful exit code, so `make check` is one call.
+
 ### Export & Model Management
 
 | Tool | Description |
 |------|-------------|
-| `export_model` | Export to STL, 3MF, AMF, OFF, DXF, or SVG |
-| `create_model` | Create a new `.scad` file in the workspace |
-| `get_model` | Read a model file and its metadata |
-| `update_model` | Update an existing model's content |
-| `list_models` | List all models in the workspace |
-| `delete_model` | Delete a model file |
+| `export_model` | Export to STL, 3MF, AMF, OFF, NEF3, DXF, SVG, PDF or CSG. With `parts=[...]` every part is exported in its assembly position and bundled into one 3MF with named objects (or a directory of STLs) |
+| `model` | `action=create|get|update|list|delete` for `.scad` files in a workspace, with content-hash etags. `template="part:<id>"` writes a purchased-part module from the catalog |
 
 ### Measurement & Validation
 
 | Tool | Description |
 |------|-------------|
-| `measure` | Exact numbers from the exported geometry: bbox, dimensions, volume, surface area, solid and cavity counts, watertightness, `mesh_health`. `mode=parts` measures each part of an assembly, `mode=section` returns cut contours with area, `mode=mass` adds grams for a material. Accepts an existing STL/SVG via `mesh` |
-| `validate` | `mode=syntax` (parse and evaluate, no geometry), `mode=geometry` (mesh findings: open edges, non-manifold, several solids, cavities), `mode=predicates` (assert `["W > 10", "H == 2*W"]` in the model's scope), `mode=includes` (every include/use/import resolved or not) |
+| `measure` | Exact numbers from the geometry: `model` (bbox, volume, area, components, watertight, `mesh_health`), `parts`, `section` (contours; the offset may be an expression in the model's scope), `mass` (grams; with `parts=` and `about_axis=` the assembly mass, centre of mass and inertia about an axis, with `mass_g` overrides for purchased parts), `probe` (solid/air and which part at points; ray crossings; line of sight along a polyline), `features` (holes from the CSG tree: axis, diameter, depth, through/blind, undersize at `$fn`, fit names), `printability` (overhang patches with unsupported reach, thickness distribution vs nozzle, islands, support estimate; facts only), `orientation` (candidate orientations, no winner chosen), `anchors` (BOSL2 anchor frames in the assembly frame). Accepts an existing STL/SVG via `mesh` |
+| `validate` | `mode=syntax`, `geometry`, `predicates` (with `sweep={variable, values}` reporting the crossing), `includes` (references resolved or not, plus the BOSL2 lint: a module from a `use`d file placed by `attach()` is silently put at CENTER; `autofix=true` applies the rewrite when it is safe), `printability` (rules from the design-rule reference over measured facts) |
 | `scad_eval` | Evaluate expressions in a model's variable scope and get typed values (number, vector, string, bool, range, undef) |
-| `reference` | Sourced engineering data with confidence labels: fits and clearances, metric fasteners, heat-set inserts, bearings, magnets, joints, FDM design rules, materials, OpenSCAD cheatsheet, conventions |
+| `reference` | Sourced engineering data with confidence labels: fits (also bidirectional: `diameter_mm=3.3` names the hole, `shaft_mm`+`bore_mm` names the fit), metric fasteners, heat-set inserts, bearings, magnets, joints, a purchased-parts catalog with BOSL2 modules and clearance masks, FDM design rules, materials, OpenSCAD cheatsheet, conventions |
 | `get_libraries` | Discover installed OpenSCAD libraries |
 | `check_openscad` | Verify OpenSCAD installation, version and capabilities |
 
@@ -136,7 +140,7 @@ unknown module and draws a blank scene.
 
 | Tool | Description |
 |------|-------------|
-| `get_project_files` | List `.scad` files and their `include`/`use` dependency graph |
+| `get_project_files` | List `.scad` files and their references; `mode=trace` follows a constant through the project (what depends on it, what it depends on) |
 | `clear_cache` | Clear the render cache |
 
 ## Usage Examples

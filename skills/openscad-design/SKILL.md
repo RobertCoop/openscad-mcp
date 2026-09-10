@@ -96,6 +96,53 @@ per-part colouring, `compare` for before/after.
   `mesh_health.issue`, and `null` means the check was not performed, which is not the
   same as passing.
 
+### 6b. Assemblies: name the parts, then ask `check`
+
+Once a design has more than one part, stop reasoning from pictures and give the
+server the parts by name. Every part is exported separately (never unioned), so
+identity survives and every relation is a number in the assembly frame.
+
+```
+check(scad_file="assembly.scad", mode="interference",
+      parts=[{name:"bracket", code:"bracket();"},
+             {name:"motor", code:"StepMotor28BYJ();", place:"translate(MOTOR_POS)",
+              ghost:true, mass_g:34}])
+```
+
+- `state` is `clear`, `contact`, or `interference`. Flush contact is *contact*,
+  never interference; a sliding pair (a pinion on a plate) that reports contact is
+  the defect, so declare `motion` on the moving part and use `contact` with
+  `kind="sliding"`.
+- `mode="clearance"` gives the exact minimum distance and both closest points;
+  `mode="motion"` sweeps a part about an axis or along a vector and, for a full
+  turn, adds a certificate that says whether the parts can *ever* touch.
+- `mode="alignment"` is the only check that sees a 0.6 mm hole misalignment:
+  interference and clearance both read zero there.
+- Every row carries `quality.fn`. A distance smaller than the tessellation error
+  bound comes back `UNRESOLVED`; re-run with `quality="high"` or an integer `$fn`.
+- `measure(mode="probe")` answers "is there material at this point, and whose",
+  ray casts ("does the scanner see the card"), and line-of-sight polylines.
+- `measure(mode="features")` lists the holes a part cuts (axis, diameter, depth,
+  fit name) straight from the CSG tree, and `reference(topic="fits", diameter_mm=3.3)`
+  names what a hole is.
+- Freeze the rules in a check file (YAML: `frames`, `quality`, `parts`, `checks`,
+  `model`) and re-run `check(check_file=..., mode="rules")` after every edit;
+  `openscad-mcp check file.yaml` does the same from a Makefile.
+
+**Purchased parts.** `reference(topic="parts")` lists sourced entries (28BYJ-48,
+NEMA 17, lazy susan, lever microswitch, TCRT5000). `model(action="create",
+template="part:28byj-48")` writes a BOSL2 module with named anchors, a clearance
+mask for `difference()`, and a `verify[]` list of dimensions to confirm on your
+own motor. Design the pocket from the part's named numbers, then let `check`
+prove it: the mask, not a `minkowski()` grow, is the pocket; `hull()` of two
+poses is wrong for an insertion sweep.
+
+**Before printing.** `measure(mode="printability", orientation=[180,0,0])` gives
+overhang patches with their unsupported reach, the wall-thickness distribution
+against the nozzle, islands, and a support estimate. `mode="orientation"` lists
+candidates but names no winner; you decide by which faces must look good.
+`validate(mode="printability")` turns the facts into findings with thresholds.
+
 ### 7. Iterate by changing a variable and re-measuring
 
 Change one variable, re-run `measure`, compare the number to the previous number.
@@ -211,14 +258,15 @@ Epsilon overlaps are not a hack here; they are the correct construction.
 
 | Tool | Use it for |
 |---|---|
-| `validate` | `syntax`, `geometry`, `predicates`, `includes` |
-| `measure` | `model`, `parts`, `section`, `mass`; also takes an existing STL via `mesh` |
-| `render` | `views`, `section`, `parts`, `compare`; `grounded=true` for real scale |
+| `check` | `interference`, `clearance`, `contact`, `alignment`, `motion`, `rules` over named parts; check files; exit codes |
+| `validate` | `syntax`, `geometry`, `predicates` (+`sweep`), `includes` (+BOSL2 lint, `autofix`), `printability` |
+| `measure` | `model`, `parts`, `section`, `mass`, `probe`, `features`, `printability`, `orientation`, `anchors`; existing STL via `mesh` |
+| `render` | `views`, `section`, `parts`, `compare`; `grounded=true` for real scale; `look_at`, `callouts` |
 | `scad_eval` | typed evaluation of expressions in the design's parameter space |
-| `reference` | fits, fasteners, inserts, bearings, magnets, joints, conventions, cheatsheet, dfm, materials |
-| `export_model` | STL, 3MF, AMF, OFF, DXF, SVG |
+| `reference` | fits (also by diameter or shaft+bore), fasteners, inserts, bearings, magnets, joints, parts, conventions, cheatsheet, dfm, materials |
+| `export_model` | STL, 3MF, AMF, OFF, NEF3, DXF, SVG, PDF, CSG; `parts=` for a named-object 3MF |
+| `model` | `action=create|get|update|list|delete`; `template="part:<id>"` |
 | `check_openscad` | binary presence, version, capabilities |
 | `get_libraries` | what is installed on this machine, and the exact import line |
-| `get_project_files` | .scad files and their include/use dependency graph |
-| `create_model` / `get_model` / `update_model` / `list_models` / `delete_model` | workspace file CRUD |
+| `get_project_files` | .scad files and their references; `mode=trace` for a constant's dependents |
 | `clear_cache` | when a cached result may predate an edit to an included file |

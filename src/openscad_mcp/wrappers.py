@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 MODEL_MODULE = "__model"
 EVAL_MARKER = "__OPENSCAD_MCP_EVAL__"
+SECTION_MARKER = "__SECTION_OFFSET__"
 
 
 def format_scad_value(value: Any) -> str:
@@ -198,7 +199,7 @@ def absolutize_file_refs(text: str, base_dir: Path) -> str:
 SECTION_AXES = {"x", "y", "z"}
 
 
-def section_transform(axis: str, offset: float) -> str:
+def section_transform(axis: str, offset: "float | str") -> str:
     """Transform that moves the requested cut plane onto ``z = 0``.
 
     ``axis`` is the normal of the cut plane: ``"z"`` cuts horizontally at
@@ -213,15 +214,18 @@ def section_transform(axis: str, offset: float) -> str:
     axis = axis.lower()
     if axis not in SECTION_AXES:
         raise ValueError(f"section axis must be one of {sorted(SECTION_AXES)}, got {axis!r}")
+    # A numeric offset is inlined as a literal; a string is an OpenSCAD
+    # expression evaluated in the model's scope (e.g. "PINION_BOTTOM_Z + 2").
+    neg = f"-({offset})" if isinstance(offset, str) else f"{-offset}"
     if axis == "z":
-        return f"translate([0, 0, {-offset}])"
+        return f"translate([0, 0, {neg}])"
     if axis == "x":
         # rotate about Y by -90: (x,y,z) -> (-z, y, x); then about Z by -90 so
         # in-plane X = model Y and in-plane Y = model Z (a view from +X).
-        return f"rotate([0, 0, -90]) rotate([0, -90, 0]) translate([{-offset}, 0, 0])"
+        return f"rotate([0, 0, -90]) rotate([0, -90, 0]) translate([{neg}, 0, 0])"
     # axis y: rotate about X by +90: (x,y,z) -> (x, -z, y); in-plane X = model X,
     # in-plane Y = model Z (a view from -Y, i.e. the front).
-    return f"rotate([90, 0, 0]) translate([0, {-offset}, 0])"
+    return f"rotate([90, 0, 0]) translate([0, {neg}, 0])"
 
 
 def section_in_plane_axes(axis: str) -> Tuple[str, str]:
@@ -232,13 +236,19 @@ def section_in_plane_axes(axis: str) -> Tuple[str, str]:
 def section_wrapper(
     source_text: str,
     axis: str,
-    offset: float,
+    offset: "float | str",
     variables: Optional[Dict[str, Any]] = None,
 ) -> WrappedSource:
-    """Program that exports the cross-section of the model as 2D geometry."""
+    """Program that exports the cross-section of the model as 2D geometry.
+
+    When *offset* is an expression, its resolved value is echoed as
+    ``ECHO: "__SECTION_OFFSET__", <value>`` so the caller can report it.
+    """
+    echo = f'echo("{SECTION_MARKER}", ({offset}));\n' if isinstance(offset, str) else ""
     return build_wrapper(
         source_text,
         variables,
+        extra_body=echo,
         tail=f"projection(cut = true) {section_transform(axis, offset)} {MODEL_MODULE}();\n",
     )
 

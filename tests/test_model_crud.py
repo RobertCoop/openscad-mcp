@@ -18,30 +18,37 @@ from unittest.mock import AsyncMock, Mock
 from openscad_mcp.server import (
     _validate_model_name,
     _resolve_workspace,
-    create_model,
-    get_model,
-    update_model,
-    list_models,
-    delete_model,
+    model,
 )
 from openscad_mcp.utils.config import Config, CacheConfig, SecurityConfig, set_config
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers: the five CRUD tools collapsed into model(action=...); these
+# adapters keep the original call shapes so the tests read unchanged.
 # ---------------------------------------------------------------------------
 
-def _unwrap(tool):
-    """Return the underlying async function from a FastMCP tool wrapper."""
-    return tool.fn if hasattr(tool, "fn") else tool
+_model = model.fn if hasattr(model, "fn") else model
 
 
-# Unwrap MCP tool wrappers once at module level
-_create_model = _unwrap(create_model)
-_get_model = _unwrap(get_model)
-_update_model = _unwrap(update_model)
-_list_models = _unwrap(list_models)
-_delete_model = _unwrap(delete_model)
+async def _create_model(name, content, workspace=None, ctx=None):
+    return await _model(action="create", name=name, content=content, workspace=workspace, ctx=ctx)
+
+
+async def _get_model(name, workspace=None, ctx=None):
+    return await _model(action="get", name=name, workspace=workspace, ctx=ctx)
+
+
+async def _update_model(name, content, workspace=None, ctx=None):
+    return await _model(action="update", name=name, content=content, workspace=workspace, ctx=ctx)
+
+
+async def _list_models(workspace=None, ctx=None):
+    return await _model(action="list", workspace=workspace, ctx=ctx)
+
+
+async def _delete_model(name, workspace=None, ctx=None):
+    return await _model(action="delete", name=name, workspace=workspace, ctx=ctx)
 
 
 # ============================================================================

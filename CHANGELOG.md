@@ -15,6 +15,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cavity counts, watertightness, open/non-manifold edge counts). The tool
   count is unchanged at 15 and the schema is smaller.
 
+### Added (Phase 3-4: assembly ground truth, features, manufacturing)
+- `check` tool: named parts exported separately (never unioned) with an
+  on-disk per-part mesh cache; `mode=interference|clearance|contact|
+  alignment|motion|rules`; one row shape with state, magnitude, witness
+  point, `$fn` provenance and an unresolved status inside the tessellation
+  error bound; check files (YAML/JSON: frames, quality, parts, checks,
+  model) and `openscad-mcp check <file>` with exit code 0/1/2.
+- `geom.py`: the shared mesh kernel (BVH, exact distance, winding number,
+  ray casts, contact area, penetration depth, sweeps, full-turn
+  certificate). OpenSCAD's `intersection()` volume is now an opt-in
+  cross-check (`volume=true`), since a coincident-face pair yields nothing.
+- `measure` modes: `probe` (points, rays, polylines), `features` (holes
+  from the CSG dump with fit names), `mass` over parts with `about_axis`
+  and `mass_g` overrides, `printability` and `orientation` (facts, no
+  verdict), `anchors` (BOSL2 anchors in the assembly frame);
+  `section_offset` accepts an expression in the model's scope.
+- `validate`: BOSL2 use/attach shadowing lint with `autofix`, predicate
+  `sweep`, `mode=printability` over the design-rule reference.
+- `render`: `look_at`, `callouts`, per-part `ghost`/`explode`/`color`,
+  name-derived stable colours.
+- `reference`: `topic=parts` (five sourced purchased parts with generated
+  BOSL2 modules, named anchors and clearance masks, written by
+  `model(template="part:<id>")`); bidirectional fits (`diameter_mm`,
+  `shaft_mm`+`bore_mm`).
+- `get_project_files(mode=trace)`: constant dependency trace.
+- `export_model(parts=...)`: multi-object named 3MF bundles.
+- `model` replaces `create_model`/`get_model`/`update_model`/`list_models`/
+  `delete_model` (`action=`), with etags. Tool count: 12.
+
 ### Added (Phase 1-2: numbers, framing, seeing inside)
 - `measure`: exact geometry from the exported mesh via a stdlib analyzer
   (`mesh.py`); `mode=parts` measures each part of an assembly with the

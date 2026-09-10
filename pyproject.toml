@@ -86,6 +86,10 @@ include = [
     "src/**/*.yaml",
     "src/**/*.yml",
     "src/**/*.json",
+    # Purchased-parts catalog: one generated BOSL2 file per entry, plus the
+    # data policy that governs them. Loaded at runtime by parts_catalog.py.
+    "src/openscad_mcp/parts/*.scad",
+    "src/openscad_mcp/parts/README.md",
     "README.md",
     "AGENTS.md",
     "LICENSE",
@@ -113,6 +117,12 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openscad_mcp"]
+# Keep the purchased-parts catalog in the wheel: parts_catalog.py reads these at
+# runtime, so a wheel without them raises FileNotFoundError from part_scad_path().
+artifacts = [
+    "src/openscad_mcp/parts/*.scad",
+    "src/openscad_mcp/parts/README.md",
+]
 
 [tool.ruff]
 line-length = 100

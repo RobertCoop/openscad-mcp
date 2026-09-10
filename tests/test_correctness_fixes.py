@@ -844,7 +844,7 @@ class TestConcurrencyPrimitive:
 class TestToolSurfaceBudget:
     """The tool schema is paid on every request. Keep it bounded."""
 
-    BUDGET_CHARS = 20_000
+    BUDGET_CHARS = 21_000
     PER_TOOL_CHARS = 3_600
 
     async def test_total_schema_within_budget(self):

@@ -65,13 +65,17 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 **Rendering:**
 - `render` — one tool, `mode=views|section|parts|compare`. Each image is preceded by a spatial digest (camera, view direction, mm/px when `grounded`, bbox) and followed by a metadata JSON with diagnostics. `grounded=true` measures the bbox first (cached in `_measure_cache`) and uses `camera.fit_camera` + `--projection=o`; `annotate=true` draws with `camera.annotate`. Sections and parts are source-level wrappers from `wrappers.py`
 
+**Assemblies (`assembly.py`, `checks.py`):**
+- `check` — `mode=interference|clearance|contact|alignment|motion|rules`. Parts are named `{name, code, place, frame, ghost, mass_g, motion}`; each is exported *separately* through `_export_parts` (parallel, on-disk cache under `cache/parts/` keyed on source + static dependency fingerprint + placement + variables + `$fn` + binary) and loaded as `geom.Mesh`. **Never union an assembly**: CGAL's union destroys part identity non-uniformly. Relations come from `geom.classify_pair` (min-distance ladder: clear / contact / interference; flush contact is contact, never interference; OpenSCAD `intersection()` volume is an opt-in cross-check via `volume=true`, never the oracle). `checks.RuleEngine` evaluates check-file rules; `openscad-mcp check file.yaml` is the CLI with exit code 0/1/2.
+- Quality provenance: every geometric row carries `quality.fn`; distances inside the inscribed-polygon bound `r*(1-cos(180/$fn))` are `UNRESOLVED`.
+
 **Export & Model Management:**
-- `export_model` — STL/3MF/AMF/OFF/NEF3/DXF/SVG/PDF/CSG export; mesh formats return `mesh_health` from the CGAL statistics banner (`manifold` true/false/null)
-- `create_model`, `get_model`, `update_model`, `list_models`, `delete_model` — CRUD for .scad files
+- `export_model` — STL/3MF/AMF/OFF/NEF3/DXF/SVG/PDF/CSG export; mesh formats return `mesh_health`; `parts=[...]` bundles per-part exports into one named-object 3MF (`threemf.py`) or a directory of STLs
+- `model` — `action=create|get|update|list|delete` (the five CRUD tools collapsed); `template="part:<id>"` writes a catalog part module
 
 **Analysis & Validation:**
-- `measure` — `mode=model|parts|section|mass`: exact numbers from `mesh.analyze_stl` (volume, area, components, cavities, watertight, open/non-manifold edges) plus `mesh_health`; `mesh=` analyses an existing STL/SVG; 2D models fall back to SVG polygons
-- `validate` — `mode=syntax|geometry|predicates|includes`
+- `measure` — `mode=model|parts|section|mass|probe|features|printability|orientation|anchors`: numbers from `mesh.py` (model/parts/section), `massprops.py` (mass, inertia, composition with `mass_g` overrides), `geom.py` (probe: winding-number point-in-solid, ray crossings, polylines), `csgfeatures.py` (features: cylinders from `--export-format=csg` with hull/minkowski masking), `printability.py` (facts only; no verdict, no "best" orientation), and an echo-based BOSL2 anchor probe (`_anchor_probe_body`)
+- `validate` — `mode=syntax|geometry|predicates|includes|printability`; predicates take `sweep=`; includes runs `analysis.lint_use_shadowing` and applies safe `use`→`include` rewrites with `autofix=true`
 - `scad_eval` — typed expression evaluation in the model's scope via echo read-back (`wrappers.eval_wrapper`, `parse_echo_values`)
 - `reference` — static engineering data from `reference.py` with confidence labels; also exposed as resources and as server `instructions`
 - `get_libraries` — discover installed OpenSCAD libraries
@@ -83,6 +87,14 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 
 ### Supporting modules
 
+- **`assembly.py`** — the assembly model: `Part`/`Frame`/`Assembly`, check-file grammar (YAML/JSON), frame composition as SCAD prefix text, `part_body()` (`!union(){ placement { code } }`)
+- **`checks.py`** — `RuleEngine` over `geom` meshes: interference/clearance/contact/predicate/probe/ray/sweep/alignment/print rules, one row shape, `exit_code`
+- **`geom.py`** — the one mesh kernel: BVH (leaf 1), exact tri–tri distance, generalized winding number (the point-in-solid primitive; ray parity is internal only), Möller–Trumbore with the behind-origin guard, coplanar contact area, penetration depth, sweeps, the (r,z) full-turn certificate
+- **`csgfeatures.py`** — CSG-dump parser: cylinders with world transforms and polarity, hull/minkowski masking, stubs dropped, pattern grouping, fit candidates, cross-part alignment
+- **`massprops.py` / `printability.py`** — exact inertia by tetrahedra; overhang with a bracket, thickness distribution by rays, islands by canonical slicing, support estimate, orientation candidates with a bed-contact floor
+- **`analysis.py`** — static analysis: BOSL2 `$var` shadowing lint with rewrite plans and private shadow copies, constant dependency trace, section-expression validator, name-hashed stable colours
+- **`parts_catalog.py` + `parts/*.scad`** — purchased-parts catalog (28BYJ-48, NEMA 17, lazy susan, lever microswitch, TCRT5000) with sources, confidence, `verify[]`, and generated BOSL2 attachables with named anchors and clearance masks (plain `difference()`, never `tag()/diff()`)
+- **`threemf.py`** — multi-object 3MF writer
 - **`wrappers.py`** — source-level wrappers. `hoist_source()` lifts the model's `include`/`use` lines to file scope (a library's `use <>` is a syntax error inside a module, so BOSL2 files broke otherwise) and `build_wrapper()` inlines the remaining text inside `module __model(){...}` with caller variables as trailing assignments (`-D` does not reach a module body). The wrapper file is written to the server temp dir (`_ModelSource.wrapper_file`, never into the user's project); the model's directory goes on OPENSCADPATH (`include_paths_for_wrapper`) and relative `import()`/`surface()` paths are rewritten absolute (`absolutize_file_refs`). Caller variables are injected at file scope *and* module scope: constants derived in a hoisted include are file-scope values. `!union(){...}` limits output to the wrapped operation. `WrappedSource.rebase_line` maps wrapper line numbers back to the model
 - **`mesh.py`** — stdlib STL/SVG analysis (welding, union-find components, signed volumes, edge census)
 - **`camera.py`** — orthographic camera model (`view_height_mm = 0.397825 * distance`, keyed to image height), `fit_camera`, Pillow annotation, spatial digest, part palette
@@ -124,6 +136,8 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **Tool surface budget**: 15 tools, about 17k chars of schema; a feature is a *mode* of an existing tool until it proves it needs to be a tool (tool-selection accuracy degrades past ~30 tools). `tests/test_correctness_fixes.py` enforces the budget.
 - **Wrapped modes cannot use `-D`**: for section/parts/eval the model text is inlined inside a module, so variables are injected as assignments appended to that module body (verified: `-D` is ignored there, appended assignments override silently). Never put `include`/`use` inside the module: hoist them.
 - **`$preview` guards**: files that instantiate geometry only under `if ($preview)` export nothing; sections and measurements need the guard variable passed via `variables`.
+- **Fix by private copy or rewrite**: when a toolchain limitation blocks a correct answer (e.g. BOSL2 `attach()` across `use <>`), the server may evaluate a patched private copy or, when there are no name collisions, rewrite the project file (`validate(mode=includes, autofix=true)`). Correctness outranks preserving formatting.
+- **Tool surface**: 12 tools. A feature is a mode until it proves it needs a tool; `check` earned its slot because its subject is a relation between two parts and `mode=rules` is a distinct verb.
 - **Response size management**: Large renders auto-save to files instead of returning base64 to avoid oversized MCP responses.
 - **Camera format**: 6-value eye+center format (`--camera=eye_x,eye_y,eye_z,center_x,center_y,center_z`), not the 7-value translate+rotate format.
 - **Render caching**: Enabled by default, validated against a per-entry dependency manifest (see Architecture). Cache stored in `~/.cache/openscad-mcp/`. Never cache a render without recording what it read.

@@ -23,12 +23,16 @@ Public API::
     lookup(topic, query=None, detailed=False) -> dict
     conventions_brief() -> str
     cheatsheet() -> str
+    fit_for_diameter(d_mm) -> list[dict]
+    fit_class(shaft_mm, bore_mm) -> dict
 """
 
 from __future__ import annotations
 
 import copy
 from typing import Any
+
+from .parts_catalog import PARTS_NOTES, PARTS_SUMMARY, reference_entries
 
 __all__ = [
     "TOPICS",
@@ -37,6 +41,8 @@ __all__ = [
     "lookup",
     "conventions_brief",
     "cheatsheet",
+    "fit_for_diameter",
+    "fit_class",
 ]
 
 TOPICS = [
@@ -50,6 +56,7 @@ TOPICS = [
     "cheatsheet",
     "dfm",
     "materials",
+    "parts",
 ]
 
 CONFIDENCE_LEVELS = ("standard", "consensus", "calibrate")
@@ -1348,6 +1355,13 @@ _TOPIC_DATA: dict[str, dict[str, Any]] = {
         "entries": _MATERIALS,
         "notes": _MATERIALS_NOTES,
     },
+    # Delegated to the parts_catalog module, which owns the dimension sheets and
+    # ships a generated BOSL2 module for each part.
+    "parts": {
+        "summary": PARTS_SUMMARY,
+        "entries": reference_entries(),
+        "notes": list(PARTS_NOTES),
+    },
 }
 
 # --------------------------------------------------------------------------
@@ -1492,3 +1506,162 @@ def conventions_brief() -> str:
 def cheatsheet() -> str:
     """Return OpenSCAD syntax reminders as plain text, under 2500 characters."""
     return _CHEATSHEET_TEXT
+
+
+def fit_for_diameter(d_mm: float) -> list[dict[str, Any]]:
+    """Explain what a measured diameter could be, as the three closest fastener rows.
+
+    You measure a hole at 3.3 mm and want to know what it is for. That question
+    has no single answer: 3.3 is exactly an M4 tap drill, and it is also within
+    a tenth of both an M3 close and an M3 medium clearance hole. Returning one
+    winner would hide that, so this always returns the top three candidates and
+    lets you decide from the deltas which reading fits your part.
+
+    Every candidate is a real row from the ``fasteners`` table: a tap drill, one
+    of the three ISO 273 clearance grades, or a counterbore.
+
+    Args:
+        d_mm: A diameter in millimetres. Must be positive.
+
+    Returns:
+        Up to three ``{"fastener", "role", "field", "value_mm", "delta_mm",
+        "meaning", "confidence", "source"}`` dicts, closest first.
+        ``delta_mm`` is signed and is ``d_mm - value_mm``: positive means your
+        diameter is larger than the table value.
+
+    Raises:
+        ValueError: If ``d_mm`` is not a positive number.
+    """
+    try:
+        diameter = float(d_mm)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"d_mm must be a number, got {d_mm!r}") from exc
+    if not diameter > 0:
+        raise ValueError(f"d_mm must be a positive diameter in millimetres, got {d_mm!r}")
+
+    candidates: list[dict[str, Any]] = []
+    for row in _FASTENERS:
+        for field, role, meaning in _FIT_ROLES:
+            value = float(row[field])
+            candidates.append(
+                {
+                    "fastener": row["name"],
+                    "role": role,
+                    "field": field,
+                    "value_mm": value,
+                    "delta_mm": round(diameter - value, 4),
+                    "meaning": meaning.format(name=row["name"]),
+                    "confidence": row["confidence"],
+                    "source": row["source"],
+                }
+            )
+
+    candidates.sort(key=lambda c: (abs(c["delta_mm"]), c["value_mm"], c["field"]))
+    return candidates[:3]
+
+
+#: (field, role, meaning) for every fastener-table diameter worth matching against.
+_FIT_ROLES: tuple[tuple[str, str, str], ...] = (
+    ("tap_drill_mm", "tap drill", "drill this then cut a {name} thread into it"),
+    (
+        "clearance_hole_close_mm",
+        "clearance hole, close",
+        "a {name} passes with almost no play; ISO 273 fine series",
+    ),
+    (
+        "clearance_hole_medium_mm",
+        "clearance hole, medium",
+        "a {name} passes freely; ISO 273 medium series, the default",
+    ),
+    (
+        "clearance_hole_free_mm",
+        "clearance hole, free",
+        "a {name} passes with room for misalignment; ISO 273 coarse series",
+    ),
+    (
+        "counterbore_diameter_mm",
+        "counterbore",
+        "a {name} socket head cap screw head sinks below the surface",
+    ),
+)
+
+
+def fit_class(shaft_mm: float, bore_mm: float) -> dict[str, Any]:
+    """Name the fit a shaft and bore pair actually is.
+
+    The inverse of looking up a fit and applying it: you have two numbers, from
+    a drawing or from calipers, and you want to know whether they will press,
+    slip or rattle.
+
+    Args:
+        shaft_mm: Outside diameter of the shaft or pin, in millimetres.
+        bore_mm: Inside diameter of the hole it goes into, in millimetres.
+
+    Returns:
+        ``{"diametral_mm", "per_side_mm", "fit", "note"}`` plus
+        ``"confidence"``, ``"source"``, ``"interference"`` and
+        ``"alternatives"``. ``fit`` is the name of the row in the ``fits``
+        table whose diametral range contains the measured clearance; where
+        several ranges overlap, the one whose nominal clearance is closest
+        wins and the rest are listed under ``alternatives``. If nothing
+        contains it, ``fit`` names the nearest row and the note says the pair
+        is off the end of the table.
+
+    Raises:
+        ValueError: If either argument is not a number.
+    """
+    try:
+        shaft = float(shaft_mm)
+        bore = float(bore_mm)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"shaft_mm and bore_mm must be numbers, got {shaft_mm!r}, {bore_mm!r}"
+        ) from exc
+
+    diametral = round(bore - shaft, 6)
+    per_side = round(diametral / 2, 6)
+
+    contained = [
+        row
+        for row in _FITS
+        if row["clearance_diametral_range_mm"][0]
+        <= diametral
+        <= row["clearance_diametral_range_mm"][1]
+    ]
+    pool = sorted(
+        contained or list(_FITS),
+        key=lambda row: abs(diametral - row["clearance_diametral_mm"]),
+    )
+    best = pool[0]
+
+    if contained:
+        note = (
+            f"{diametral:+.3f} mm on the diameter, {per_side:+.3f} mm per side, which "
+            f"falls in the {best['clearance_diametral_range_mm']} mm band for a "
+            f"{best['name']}. {best['note']}"
+        )
+    else:
+        low = min(row["clearance_diametral_range_mm"][0] for row in _FITS)
+        high = max(row["clearance_diametral_range_mm"][1] for row in _FITS)
+        tail = (
+            "this is a heavy interference and needs a press, heat or cold."
+            if diametral < low
+            else "this much play is a loose feature, not a fit."
+        )
+        note = (
+            f"{diametral:+.3f} mm on the diameter is outside every band in the fits "
+            f"table, which runs {low} to {high} mm. The nearest row is "
+            f"{best['name']!r}, but treat that as a label, not advice: {tail}"
+        )
+
+    return {
+        "diametral_mm": diametral,
+        "per_side_mm": per_side,
+        "fit": best["name"],
+        "note": note,
+        "interference": diametral < 0,
+        "in_table": bool(contained),
+        "alternatives": [row["name"] for row in pool[1:]] if contained else [],
+        "confidence": best["confidence"],
+        "source": best["source"],
+    }

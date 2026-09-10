@@ -17,6 +17,10 @@ eggs/
 lib/
 lib64/
 parts/
+# ...but src/openscad_mcp/parts/ is the purchased-parts catalog, not a build
+# artifact. It is package data that parts_catalog.py reads at runtime, so it
+# must be tracked and must ship in the wheel.
+!src/openscad_mcp/parts/
 sdist/
 var/
 wheels/
