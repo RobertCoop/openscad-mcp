@@ -763,7 +763,13 @@ def _save_to_cache(
 
 
 def _evict_cache_if_needed() -> None:
-    """Delete the oldest cache entries until total size is within limits."""
+    """Delete the oldest cache entries until total size is within limits.
+
+    An entry is every file sharing one key: ``<key>.png`` + ``<key>.json`` for
+    renders at the top level, and ``parts/<key>.stl`` + ``.json`` + ``.csg``
+    for per-part meshes. Entries are evicted whole, oldest first, so a mesh
+    never outlives its manifest and the size cap covers the parts cache too.
+    """
     config = get_config()
     if not config.cache.enabled:
         return
@@ -774,35 +780,37 @@ def _evict_cache_if_needed() -> None:
 
     max_bytes = config.cache.max_size_mb * 1024 * 1024
 
-    # Collect all cache files with their stats
-    cache_files: List[Tuple[Path, float, int]] = []
+    # Group files by (directory, stem); each group is one cache entry.
+    entries: Dict[Tuple[Path, str], List[Tuple[Path, int]]] = {}
+    newest: Dict[Tuple[Path, str], float] = {}
     total_size = 0
-    for f in list(cache_dir.glob("*.png")) + list(cache_dir.glob("*.json")):
+    candidates = list(cache_dir.glob("*.png")) + list(cache_dir.glob("*.json"))
+    parts_dir = cache_dir / "parts"
+    if parts_dir.is_dir():
+        candidates += [f for f in parts_dir.iterdir() if f.suffix in (".stl", ".json", ".csg")]
+    for f in candidates:
         try:
             stat = f.stat()
-            cache_files.append((f, stat.st_mtime, stat.st_size))
-            total_size += stat.st_size
         except OSError:
             continue
+        key = (f.parent, f.stem)
+        entries.setdefault(key, []).append((f, stat.st_size))
+        newest[key] = max(newest.get(key, 0.0), stat.st_mtime)
+        total_size += stat.st_size
 
     if total_size <= max_bytes:
         return
 
-    # Sort oldest first (ascending mtime)
-    cache_files.sort(key=lambda t: t[1])
-
-    for file_path, _mtime, file_size in cache_files:
+    # Oldest entry first (by its most recently touched file)
+    for key in sorted(entries, key=lambda k: newest[k]):
         if total_size <= max_bytes:
             break
-        try:
-            file_path.unlink()
-            total_size -= file_size
-            sibling = file_path.with_suffix(".json" if file_path.suffix == ".png" else ".png")
-            if sibling.exists():
-                total_size -= sibling.stat().st_size
-                sibling.unlink()
-        except OSError:
-            continue
+        for file_path, file_size in entries[key]:
+            try:
+                file_path.unlink()
+                total_size -= file_size
+            except OSError:
+                continue
 
 
 # ============================================================================
@@ -4046,6 +4054,8 @@ def _export_part_sync(
         "part": part.name, "records": [r.to_dict() for r in diag.records],
         "statistics": diag.statistics, "empty": empty,
     }))
+    if config.cache.enabled:
+        _evict_cache_if_needed()
     return ExportedPart(part.name, stl, False, diag, key, empty=empty)
 
 
@@ -4195,6 +4205,7 @@ def _csg_dump_sync(
                 cached.write_text(text)
             except OSError:
                 pass
+            _evict_cache_if_needed()
         return text
     finally:
         if out.exists():

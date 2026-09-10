@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Dockerfile` rebuilt: two targets (checkout and PyPI release), Xvfb started
   by an entrypoint that `exec`s the server so exit codes survive, and the
   environment reduced to variables the server reads.
+- Cache eviction now counts the per-part mesh cache (`parts/<key>.stl`,
+  `.json`, `.csg`) toward `MCP_CACHE_SIZE_MB` and evicts entries whole,
+  oldest first; previously only top-level renders were capped and check
+  runs could grow the cache without bound.
 - `examples/basic_usage.py` rewritten against the current tool surface using
   the in-memory fastmcp client; `examples/checks/turntable.yaml` added as an
   annotated check file exercising every rule.

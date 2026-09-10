@@ -236,6 +236,30 @@ class TestEvictCacheIfNeeded:
         # The oldest file should be removed
         assert not old_file.exists()
 
+    def test_evict_counts_and_groups_parts_cache(self, configured_env_with_cache):
+        """parts/<key>.{stl,json,csg} count toward the cap and go together."""
+        _tmp_path, cfg, cache_dir = configured_env_with_cache
+        cfg.cache = CacheConfig.model_construct(
+            enabled=True, directory=cache_dir, max_size_mb=0, ttl_hours=24,
+        )
+        set_config(cfg)
+        import os
+
+        parts = cache_dir / "parts"
+        parts.mkdir()
+        old_t = time.time() - 3600
+        for suffix in (".stl", ".json", ".csg"):
+            f = parts / f"oldkey{suffix}"
+            f.write_bytes(b"A" * 100)
+            os.utime(f, (old_t, old_t))
+        (cache_dir / "new.png").write_bytes(b"B" * 100)
+        (cache_dir / "new.json").write_bytes(b"{}")
+
+        _evict_cache_if_needed()
+
+        # The old part entry is gone as a whole, mesh and manifest and dump alike.
+        assert not any(parts.glob("oldkey.*"))
+
     def test_evict_noop_cache_disabled(self, configured_env):
         """Eviction is a no-op when caching is disabled."""
         _tmp_path, _cfg = configured_env
