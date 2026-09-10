@@ -43,10 +43,11 @@ body length, the real shaft length and the D-flat. BOSL2's `nema_motor_info(17)`
 table was checked against NEMA ICS 16-2001 and against two manufacturer drawings
 before being trusted.
 
-**Corrections are recorded, not quietly applied.** The KW11-3Z is 20 x 6.4 x
-9.8 mm. It is widely listed as "28.5 x 16 x 10", which is a different, larger
-family. The entry says which part it is and how to tell if you have the other
-one.
+**Corrections are recorded, not quietly applied.** The KW11-3Z case is
+20 x 6.4 x 9.8 mm; the entry's `envelope_mm` reads 10.7 high because it includes
+the plunger at its free position. The part is widely listed as "28.5 x 16 x 10",
+which is a different, larger family. The entry says which part it is and how to
+tell if you have the other one.
 
 ## Licensing
 
@@ -66,11 +67,19 @@ the data when a single entry is passed around.
 - The part origin is the centre of the overall bounding box, so the BOSL2
   `attachable()` size is the real geometry and `TOP`, `RIGHT` and the rest are
   exact. Use the **named** anchors for the datums you actually mate to.
-- Three modules per part, sharing one frame: `part_<id>()`,
-  `part_<id>_mask(clr, bore_clr, install, install_len)` and
-  `part_<id>_mount_holes_mask(d, h)`. The same `anchor=` argument places all
-  three identically.
-- `part_<id>_info()` returns the key numbers as a BOSL2 struct.
+- Four modules per part, sharing one frame: a solid, a clearance mask
+  (`clr`, `bore_clr`, `install`, `install_len`), a mounting-hole mask (`d`, `h`)
+  and an `_info()` function that returns the key numbers as a BOSL2 struct. The
+  same `anchor=` argument places the first three identically. Individual parts
+  add parameters of their own: the lazy susan's hole mask takes `plate`, the
+  microswitch solid takes `lever`.
+- **The module names are data, not a formula.** They live in the entry's
+  `modules` dict (`solid`, `mask`, `mount_holes_mask`, `info`) and the id's
+  punctuation is normalised away rather than mapped one-to-one: `28byj-48`
+  gives `part_28byj48`, `part_28byj48_mask`,
+  `part_28byj48_mount_holes_mask` and `part_28byj48_info`, while
+  `lazy-susan-4in` gives `part_lazy_susan_4in`. Read the names off
+  `lookup_part(id)["modules"]`; do not derive them.
 - Masks are authored for plain `difference()`. Do **not** wrap them in BOSL2
   `tag()` or `diff()`: tags do not cross a `use<>` boundary, so the mask would
   silently union into your part instead of cutting it.
@@ -91,12 +100,13 @@ the data when a single entry is passed around.
 `openscad_mcp.parts_catalog.self_check(part_id)` renders each part through the
 real OpenSCAD binary and checks the geometry against the entry:
 
-1. **envelope** - the exported bounding box matches `envelope_mm` to 0.05 mm.
+1. **envelope** - the exported bounding box matches `envelope_mm` to
+   `SELF_CHECK_TOL_MM`, currently 0.05 mm.
 2. **anchors** - each named anchor is probed with
-   `part_<id>() !position("name") cube(0.2, center=true)` and the marker's centre
+   `<solid>() !position("name") cube(0.2, center=true)` and the marker's centre
    must land where the entry says.
-3. **containment** - `difference() { part_<id>(); part_<id>_mask(clr=0,
-   bore_clr=0); }` must be **empty**. OpenSCAD signals empty by exiting non-zero
+3. **containment** - `difference() { <solid>(); <mask>(clr=0, bore_clr=0); }`
+   must be **empty**. OpenSCAD signals empty by exiting non-zero
    with "Current top level object is empty" and writing no file, and that is the
    pass condition. A mask that does not fully contain its part at zero clearance
    would leave slivers of material in every pocket cut with it.

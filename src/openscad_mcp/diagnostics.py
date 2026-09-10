@@ -28,6 +28,7 @@ _DIAG_RE = re.compile(
 )
 
 _TRACE_RE = re.compile(r"^TRACE:\s*(?P<msg>.*)$")
+_RELATIVE_INLINE_RE = re.compile(r"(?:\.\./|\./)+<inline>")
 
 # CGAL statistics banner printed on every mesh export (suppressed by -q).
 _STAT_RE = re.compile(
@@ -273,6 +274,9 @@ def parse_openscad_output(
             line = line.replace(inline_path, "<inline>")
             if inline_name:
                 line = line.replace(inline_name, "<inline>")
+            # OpenSCAD prints the path relative to its working directory,
+            # so a "../../../<inline>" prefix can survive the replacement.
+            line = _RELATIVE_INLINE_RE.sub("<inline>", line)
 
         m_stat = _STAT_RE.match(line)
         if m_stat:

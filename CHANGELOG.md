@@ -23,7 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repository moved to `github.com/robertcoop/openscad-mcp`; all links,
   manifests and install snippets updated. Client configs use
   `uvx openscad-mcp` instead of a git URL.
-- `fastmcp` is bounded below 5; the server is verified on fastmcp 4.0.3.
+- `fastmcp` is bounded below 5. Fresh installs resolve 4.x, where
+  `@mcp.tool` returns the bare function; the two internal callers that read
+  `FunctionTool.fn` (the `check` CLI and `validate(mode=printability)`) now
+  unwrap either shape, and CI runs the check CLI from the built wheel.
+- `Dockerfile` rebuilt: two targets (checkout and PyPI release), Xvfb started
+  by an entrypoint that `exec`s the server so exit codes survive, and the
+  environment reduced to variables the server reads.
+- `examples/basic_usage.py` rewritten against the current tool surface using
+  the in-memory fastmcp client; `examples/checks/turntable.yaml` added as an
+  annotated check file exercising every rule.
+- Documentation rewritten against the current code: API.md regenerated
+  from the tool schemas, DEPLOYMENT.md and CONTRIBUTING.md brought up to
+  date, `.env.example` reduced to the variables the server reads.
+
+### Removed
+- Stale documents describing a release that never happened
+  (`RELEASE_NOTES_v1.0.0.md`, `DEPLOYMENT_SUMMARY.md`,
+  `tests/test_documentation.md`), the unused top-level `workflows/`
+  directory, `MANIFEST.in` (Hatchling ignores it), and the old
+  `examples/config/` and `examples/rendering/` files. The example client
+  configuration that carried a placeholder API key was also purged from the
+  git history; the value was only ever the redacted placeholder.
 
 ## [0.6.0] - 2026-09-10
 
@@ -323,8 +344,8 @@ Phase 1-2 consolidation that followed v0.3.0.
 ## Support
 
 For questions and support, please use:
-- GitHub Issues: https://github.com/yourusername/openscad-mcp-server/issues
-- Discussions: https://github.com/yourusername/openscad-mcp-server/discussions
+- GitHub Issues: https://github.com/robertcoop/openscad-mcp/issues
+- Discussions: https://github.com/robertcoop/openscad-mcp/discussions
 
 [Unreleased]: https://github.com/robertcoop/openscad-mcp/compare/v0.6.1...HEAD
 [0.6.1]: https://github.com/robertcoop/openscad-mcp/compare/v0.6.0...v0.6.1

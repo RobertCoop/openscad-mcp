@@ -1,0 +1,169 @@
+# Sample check file: every rule kind the checker understands, on the small
+# turntable in turntable.scad.
+#
+# Run it from this directory:
+#
+#   openscad-mcp check turntable.yaml --allow .
+#
+# Exit codes: 0 all pass, 1 any FAIL, 2 unresolved only, 3 error.
+# Add --json for the full result, --fn N to override tessellation, --model
+# FILE to point the same rules at a different .scad file.
+
+version: 1
+model: turntable.scad
+
+# Tessellation used for every part export. Curved surfaces are faceted, so the
+# checker derives an error bound from this and reports a gap it cannot
+# distinguish from zero as UNRESOLVED rather than PASS.
+quality:
+  fn: 96
+
+# Named coordinate frames. A part in a frame inherits the composed lift
+# expressions of the whole chain (add `parent: <frame>` to nest one inside
+# another), so moving a subassembly is a one-line edit.
+frames:
+  deck:
+    lift: translate([0, 0, PLATTER_Z])
+
+# Each part is exported to its own mesh and never unioned with the others, so
+# every rule below is a pairwise query between two identified solids.
+parts:
+  - name: base
+    code: base();
+    material: PLA
+    print:
+      orientation: [0, 0, 0]
+
+  - name: platter
+    code: platter();
+    frame: deck
+    material: PLA
+    # A part with a motion is what makes `contact: sliding` and `sweep`
+    # meaningful. range is degrees for rotate, millimetres for translate.
+    motion:
+      type: rotate
+      axis: [0, 0, 1]
+      center: [0, 0, 0]
+      range: [0, 360]
+      steps: 72
+
+  - name: bracket
+    code: bracket();
+    place: translate([BOLT_R - BRACKET_W / 2, -BRACKET_W / 2, BASE_H])
+    material: PLA
+
+  # Purchased parts: ghost: true keeps them out of point classification and
+  # out of the printability rules, printed: false keeps them off the print
+  # plate, and both still take part in every pairwise relation.
+  - name: washer
+    code: washer();
+    place: translate([0, 0, BASE_H])
+    ghost: true
+    printed: false
+    material: steel
+    mass_g: 1.4
+
+  - name: screw
+    code: m3_screw();
+    place: translate([BOLT_R, 0, BASE_H + BRACKET_T])
+    ghost: true
+    printed: false
+    material: steel
+    mass_g: 0.9
+
+checks:
+  # interference: no pair may overlap. `no_intersect` is an accepted alias.
+  # tolerance_mm forgives an overlap up to that depth.
+  - rule: interference
+    pairs: all
+    tolerance_mm: 0.0
+    why: nothing in the stack may occupy the same space
+
+  # clearance: the pair must be apart by at least min_mm.
+  - rule: clearance
+    pairs: [[platter, base]]
+    min_mm: 0.15
+    why: running fit of the platter bore on the centre post
+
+  - rule: clearance
+    pairs: [[platter, bracket]]
+    min_mm: 1.5
+    why: the finger lug must not graze the bracket
+
+  # contact, kind: static -> the pair must touch over at least min_area_mm2.
+  - rule: contact
+    kind: static
+    pairs: [[bracket, base]]
+    min_area_mm2: 50
+    why: the bracket foot must seat flat on the plate
+
+  # contact, kind: sliding -> the pair must NOT touch, and must keep min_gap_mm.
+  - rule: contact
+    kind: sliding
+    pairs: [[platter, base]]
+    min_gap_mm: 0.1
+    why: the platter turns on the washer, not on the plate
+
+  # alignment: coaxial subtractive features are recovered from the CSG dump and
+  # compared. UNRESOLVED when no CSG dump is available.
+  - rule: alignment
+    tolerance_mm: 0.2
+    why: the bracket hole must be coaxial with the hole in the plate
+
+  # predicate: an OpenSCAD boolean expression evaluated against the model, so
+  # it can read the model's own variables.
+  - rule: predicate
+    expr: BORE_D - POST_D >= 0.3
+    why: keep at least 0.3 mm diametral clearance on the post
+
+  - rule: predicate
+    expr: PLATTER_Z == BASE_H + WASHER_T
+    why: the platter must sit exactly one washer above the plate
+
+  # probe: classify a world point as SOLID, AIR or SURFACE. size_mm turns the
+  # point into a small box, which resolves points that land on a face.
+  - rule: probe
+    point: [15, 0, 10]
+    expect: SOLID
+    reason: the platter must cover the plate out to r = 15
+
+  - rule: probe
+    point: [15, 0, 7]
+    expect: AIR
+    size_mm: 0.5
+    reason: the gap under the platter must stay open
+
+  # ray: cast from origin along direction and name the part that must be hit
+  # first. Omit first_hit to require that nothing is hit at all.
+  - rule: ray
+    origin: [15, 0, 60]
+    direction: [0, 0, -1]
+    max_distance_mm: 120
+    first_hit: platter
+    why: nothing may overhang the platter from above
+
+  # sweep: move one part through its motion and test it against the others at
+  # every step. A full 360 degree rotation also yields an all-angles
+  # certificate: a proof over every angle, not a sample of steps.
+  - rule: sweep
+    moving: platter
+    against: [bracket]
+    axis: [0, 0, 1]
+    center: [0, 0, 0]
+    range: [0, 360]
+    steps: 72
+    why: the platter must turn freely past the bracket
+
+  # print: printability facts for one part in its print orientation. Each
+  # limit you give adds one row; omit them all for the raw facts.
+  - rule: print
+    part: base
+    max_overhang_deg: 45
+    nozzle_mm: 0.4
+    max_overhang_area_mm2: 50
+    min_feature_mm: 0.8
+    max_unsupported_reach_mm: 2.0
+    why: the plate must print without supports
+
+  # mass is accepted in the grammar but is not evaluated here; it always
+  # reports UNRESOLVED. Use measure(mode=mass) for masses and centre of mass.

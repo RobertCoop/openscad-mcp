@@ -49,6 +49,8 @@ class Quality:
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"fn": self.fn, "curved_features": self.curved_radius_mm is not None}
+        if self.fn is None:
+            d["note"] = "no $fn override; the model's own $fn/$fa/$fs apply"
         bound = self.error_bound_mm()
         if bound is not None:
             d["error_bound_mm"] = round(bound, 4)
@@ -69,7 +71,10 @@ def relation_row(
     quality: Quality,
     why: str = "",
 ) -> Dict[str, Any]:
-    magnitude: Dict[str, Any] = {"distance_mm": round(rel.distance_mm, 4)}
+    if not math.isfinite(rel.distance_mm):
+        magnitude: Dict[str, Any] = {"distance_mm": None}
+    else:
+        magnitude = {"distance_mm": round(rel.distance_mm, 4)}
     if rel.penetration_mm is not None:
         magnitude["penetration_mm"] = round(rel.penetration_mm, 4)
     if rel.contact_area_mm2 is not None:
@@ -96,6 +101,9 @@ def relation_row(
             )
     if rel.closest is not None:
         row["closest"] = [_round_vec(rel.closest[0]), _round_vec(rel.closest[1])]
+    if not math.isfinite(rel.distance_mm):
+        row["status"] = "UNRESOLVED"
+        row["note"] = "one part has degenerate geometry (no finite distance)"
     if why:
         row["why"] = why
     return row
@@ -103,10 +111,12 @@ def relation_row(
 
 def _unresolved(row: Dict[str, Any], bound: float) -> Dict[str, Any]:
     row["status"] = "UNRESOLVED"
+    fn = row["quality"].get("fn")
+    fn_text = f"$fn={fn}" if fn is not None else "the model's own $fn/$fa/$fs"
     row["note"] = (
         f"distance {row['magnitude'].get('distance_mm')} mm is inside the tessellation "
-        f"error bound {bound:.4f} mm at fn={row['quality'].get('fn')}; re-run at "
-        "quality=high (or a larger $fn) to resolve"
+        f"error bound {bound:.4f} mm at {fn_text}; re-run with quality=high or a larger "
+        "$fn to resolve"
     )
     return row
 
@@ -359,7 +369,10 @@ class RuleEngine:
         origin = _v3(rule["origin"])
         direction = _v3(rule["direction"])
         max_d = rule.get("max_distance_mm")
-        hits = geom.ray_cast_parts(self.meshes, origin, direction, max_d)
+        # Ghost parts (reference solids, purchased parts) take part in pair
+        # checks but not in probes; a ray is a probe.
+        ray_meshes = {n: m for n, m in self.meshes.items() if not self.asm.part(n).ghost}
+        hits = geom.ray_cast_parts(ray_meshes, origin, direction, max_d)
         first = hits[0] if hits else None
         want = rule.get("first_hit")
         row: Dict[str, Any] = {

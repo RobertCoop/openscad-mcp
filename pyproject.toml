@@ -5,21 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "openscad-mcp"
 version = "0.6.1"
-description = "A Model Context Protocol (MCP) server for OpenSCAD 3D modeling and rendering"
+description = "MCP server for OpenSCAD: render, measure, check assemblies, extract features, judge printability, export"
 readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Coop" }
 ]
-maintainers = [
-    
-]
 keywords = [
     "mcp",
     "openscad",
     "3d-modeling",
+    "3d-printing",
     "rendering",
     "cad",
+    "assembly",
+    "bosl2",
     "model-context-protocol",
     "ai-tools"
 ]

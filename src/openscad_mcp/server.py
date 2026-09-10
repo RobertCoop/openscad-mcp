@@ -71,6 +71,16 @@ def _server_instructions() -> str:
 mcp = FastMCP("OpenSCAD MCP Server", instructions=_server_instructions())
 
 
+def _tool_fn(tool: Any) -> Any:
+    """Return the plain coroutine behind a registered tool.
+
+    fastmcp 2.x wraps decorated functions in a FunctionTool (callable via
+    ``.fn``); fastmcp 4.x returns the function itself. Internal callers use
+    this so both resolve.
+    """
+    return getattr(tool, "fn", tool)
+
+
 # ============================================================================
 # OpenSCAD binary discovery and capabilities
 # ============================================================================
@@ -1566,6 +1576,7 @@ async def check_openscad(
     if not openscad_path:
         searched = list(_OPENSCAD_NAMES) + list(_OPENSCAD_COMMON_PATHS)
         return {
+            "success": True,
             "installed": False,
             "version": None,
             "path": None,
@@ -1583,6 +1594,7 @@ async def check_openscad(
         await ctx.info(f"Found OpenSCAD {version} at {openscad_path}")
     
     response: Dict[str, Any] = {
+        "success": True,
         "installed": True,
         "version": version,
         "path": str(openscad_path),
@@ -2293,8 +2305,7 @@ async def clear_cache(
         try:
             size = f.stat().st_size
             f.unlink()
-            if f.suffix in (".png", ".stl"):
-                cleared += 1
+            cleared += 1
             freed += size
         except OSError as exc:
             logger.warning("Failed to delete cache file %s: %s", f, exc)
@@ -2824,15 +2835,11 @@ def _bbox_of(stats: Any) -> Optional[Tuple[Tuple[float, float, float], Tuple[flo
     return tuple(bmin), tuple(bmax)  # type: ignore[return-value]
 
 
-def _apply_quality(variables: Optional[Dict[str, Any]], quality: Optional[str]) -> Dict[str, Any]:
+def _apply_quality(variables: Optional[Dict[str, Any]], quality: Any) -> Dict[str, Any]:
+    """Merge a quality preset, integer $fn, or {fn, fa, fs} under caller variables."""
     parsed = parse_dict_param(variables, {})
-    if quality:
-        if quality not in QUALITY_PRESETS:
-            raise ValueError(
-                f"Invalid quality preset '{quality}'. Must be one of: "
-                f"{', '.join(QUALITY_PRESETS.keys())}"
-            )
-        merged = dict(QUALITY_PRESETS[quality])
+    if quality is not None and quality != "":
+        merged = _quality_to_variables(quality)
         merged.update(parsed)
         parsed = merged
     return parsed
@@ -3085,7 +3092,7 @@ async def render(
     image_size: Union[str, List[int], None] = None,
     color_scheme: str = "Cornfield",
     variables: Optional[Dict[str, Any]] = None,
-    quality: Optional[str] = None,
+    quality: Any = None,
     include_paths: Optional[List[str]] = None,
     grounded: bool = False,
     annotate: bool = False,
@@ -3355,7 +3362,7 @@ async def measure(
     mode: str = "model",
     variables: Optional[Dict[str, Any]] = None,
     include_paths: Optional[List[str]] = None,
-    parts: Optional[List[Dict[str, str]]] = None,
+    parts: Optional[List[Dict[str, Any]]] = None,
     section_axis: str = "z",
     section_offset: Any = 0.0,
     material: Optional[str] = None,
@@ -3457,7 +3464,14 @@ async def measure(
                 result["success"] = not diag.errors
 
             elif mode == "parts":
-                part_list = _parse_parts(parts)
+                # The same part grammar as check/render/export, so `place`,
+                # frames and ghosts mean the same thing everywhere; each
+                # part is measured in its assembly position.
+                asm_parts = Assembly(parts=parse_parts(parts))
+                part_list = [
+                    {"name": p.name, "code": asm_parts.part_statement(p), "display_code": p.code}
+                    for p in asm_parts.parts
+                ]
 
                 async def _one(p: Dict[str, str]):
                     async with semaphore:
@@ -3475,7 +3489,9 @@ async def measure(
                         errors.append(f"{p['name']}: {out}")
                         continue
                     stats, diag = out
-                    entry = {"name": p["name"], "code": p["code"]}
+                    entry = {"name": p["name"], "code": p.get("display_code", p["code"])}
+                    if p["code"] != p.get("display_code"):
+                        entry["placed"] = True
                     entry.update(_stats_dict(stats, detailed=False))
                     entry["mesh_health"] = diag.mesh_health()
                     if diag.errors:
@@ -3486,6 +3502,7 @@ async def measure(
                     if bb:
                         boxes.append((p["name"], bb[0], bb[1]))
                 result["parts"] = per_part
+                result["frame"] = "assembly"
                 if boxes:
                     amin = [min(b[1][i] for b in boxes) for i in range(3)]
                     amax = [max(b[2][i] for b in boxes) for i in range(3)]
@@ -3951,7 +3968,10 @@ def _quality_to_variables(quality: Any) -> Dict[str, Any]:
             return {"$fn": int(quality)}
         if quality in QUALITY_PRESETS:
             return dict(QUALITY_PRESETS[quality])
-        raise ValueError("quality must be draft|normal|high or an integer $fn")
+        raise ValueError(
+            f"Invalid quality preset '{quality}': must be draft, normal, high, an integer $fn, "
+            "or {fn, fa, fs}"
+        )
     if isinstance(quality, dict):
         return {f"${k}": v for k, v in quality.items() if k in ("fn", "fa", "fs")}
     raise ValueError("quality must be draft|normal|high, an integer, or {fn, fa, fs}")
@@ -4274,9 +4294,10 @@ async def check(
             timings["load_s"] = round(time.time() - t1, 3)
             empties = [n for n, e in exported.items() if e.empty]
 
-            need_features = mode in ("alignment", "rules") or (
-                mode == "clearance" and any(rl.get("rule") == "clearance" for rl in [{"rule": mode}])
-            )
+            # The CSG dump feeds alignment and the curved-feature radius that
+            # sets the tessellation error bound on every distance; it is
+            # cached with the part mesh, so it is cheap after the first run.
+            need_features = True
             features_by_part: Dict[str, Any] = {}
             if need_features:
                 t1 = time.time()
@@ -4384,6 +4405,17 @@ async def check(
                 rows = await loop.run_in_executor(None, engine.run, [rule])
                 timings["rules_s"] = round(time.time() - t1, 3)
 
+        for name in empties:
+            rows.append({
+                "rule": mode if mode != "rules" else "parts",
+                "subject": [name],
+                "status": "UNRESOLVED",
+                "state": "empty",
+                "note": (
+                    f"part '{name}' produced no geometry (unknown module, empty difference, "
+                    "or geometry guarded by $preview); no relation involving it was checked"
+                ),
+            })
         if not detailed:
             for r in rows:
                 r.pop("closest", None)
@@ -4551,7 +4583,7 @@ async def _measure_extended(
                     origin = tuple(float(v) for v in r[:3])
                     direction = tuple(float(v) for v in r[3:6])
                     max_d = r[6] if len(r) > 6 else None
-                hits = geom.ray_cast_parts(meshes, origin, direction, max_d)
+                hits = geom.ray_cast_parts(probe_meshes, origin, direction, max_d)
                 out_rays.append({
                     "origin": list(origin), "direction": list(direction),
                     "first_hit": None if not hits else {
@@ -4566,7 +4598,7 @@ async def _measure_extended(
             out_polyline = None
             if polyline:
                 pts = [tuple(float(v) for v in p[:3]) for p in polyline]
-                out_polyline = geom.polyline_clear(meshes, pts)
+                out_polyline = geom.polyline_clear(probe_meshes, pts)
             result.update({"points": out_points, "rays": out_rays})
             if out_polyline is not None:
                 result["polyline"] = out_polyline
@@ -4833,7 +4865,7 @@ async def _validate_printability(
     """Thin rules layer over measure(mode=printability) facts."""
     from . import reference as ref
 
-    facts = await measure.fn(
+    facts = await _tool_fn(measure)(
         scad_content=scad_content, scad_file=scad_file, mode="printability",
         variables=variables, include_paths=include_paths, orientation=orientation,
         nozzle_mm=float(profile.get("nozzle_mm", 0.4)),
@@ -5025,7 +5057,7 @@ def _cli_check(argv: List[str]) -> int:
     if args.allow:
         cfg = get_config()
         cfg.security.allowed_paths = list(args.allow)
-    result = _run_sync(check.fn(
+    result = _run_sync(_tool_fn(check)(
         scad_file=args.model, check_file=args.check_file, mode="rules", quality=args.fn,
     ))
     if args.json:

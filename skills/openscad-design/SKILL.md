@@ -64,7 +64,9 @@ clearance bug you would never see in a render.
 the user already has without re-rendering it.
 
 Modes: `model` for the whole thing, `parts` for per-solid numbers and the solid
-count, `section` for a cut plane, `mass` for volume-times-density estimates.
+count, `section` for a cut plane, `mass` for volume-times-density estimates. The
+rest — `probe`, `features`, `printability`, `orientation`, `anchors` — are in the
+tool reference at the end.
 
 ### 5. `render(grounded=true)`, one to three views
 
@@ -104,9 +106,9 @@ identity survives and every relation is a number in the assembly frame.
 
 ```
 check(scad_file="assembly.scad", mode="interference",
-      parts=[{name:"bracket", code:"bracket();"},
-             {name:"motor", code:"StepMotor28BYJ();", place:"translate(MOTOR_POS)",
-              ghost:true, mass_g:34}])
+      parts=[{"name": "bracket", "code": "bracket();"},
+             {"name": "motor", "code": "motor();", "place": "translate(MOTOR_POS)",
+              "ghost": true, "mass_g": 34}])
 ```
 
 - `state` is `clear`, `contact`, or `interference`. Flush contact is *contact*,
@@ -129,11 +131,14 @@ check(scad_file="assembly.scad", mode="interference",
   `model`) and re-run `check(check_file=..., mode="rules")` after every edit;
   `openscad-mcp check file.yaml` does the same from a Makefile.
 
-**Purchased parts.** `reference(topic="parts")` lists sourced entries (28BYJ-48,
-NEMA 17, lazy susan, lever microswitch, TCRT5000). `model(action="create",
-template="part:28byj-48")` writes a BOSL2 module with named anchors, a clearance
-mask for `difference()`, and a `verify[]` list of dimensions to confirm on your
-own motor. Design the pocket from the part's named numbers, then let `check`
+**Purchased parts.** `reference(topic="parts")` lists the five sourced entries:
+`28byj-48`, `nema17`, `lazy-susan-4in`, `kw11-3z` (snap-action microswitch) and
+`tcrt5000-module`. `model(action="create", template="part:28byj-48")` writes
+BOSL2 modules with named anchors, a clearance mask for `difference()`, and a
+`verify[]` list of dimensions to confirm on your own motor. The module names come
+from the entry, not from the id: `28byj-48` gives `part_28byj48()`,
+`part_28byj48_mask()`, `part_28byj48_mount_holes_mask()` and
+`part_28byj48_info()`. Design the pocket from the part's named numbers, then let `check`
 prove it: the mask, not a `minkowski()` grow, is the pocket; `hull()` of two
 poses is wrong for an insertion sweep.
 
@@ -258,7 +263,7 @@ Epsilon overlaps are not a hack here; they are the correct construction.
 
 | Tool | Use it for |
 |---|---|
-| `check` | `interference`, `clearance`, `contact`, `alignment`, `motion`, `rules` over named parts; check files; exit codes |
+| `check` | `interference`, `clearance`, `contact`, `alignment`, `motion`, `rules` over named parts; check files (`model`, `quality`, `frames`, `parts`, `checks`); exit codes |
 | `validate` | `syntax`, `geometry`, `predicates` (+`sweep`), `includes` (+BOSL2 lint, `autofix`), `printability` |
 | `measure` | `model`, `parts`, `section`, `mass`, `probe`, `features`, `printability`, `orientation`, `anchors`; existing STL via `mesh` |
 | `render` | `views`, `section`, `parts`, `compare`; `grounded=true` for real scale; `look_at`, `callouts` |

@@ -47,6 +47,11 @@ jobs:
             "import openscad_mcp, openscad_mcp.server, openscad_mcp.parts_catalog as p; \
              print(openscad_mcp.__version__, len(p.list_parts()), 'catalog parts')"
           uv run --isolated --no-project --with dist/*.whl openscad-mcp check --help
+      - name: Run the check CLI from the wheel (exercises the tool-unwrapping path on fastmcp 4.x)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q openscad xvfb
+          xvfb-run -a uv run --isolated --no-project --with dist/*.whl \
+            openscad-mcp check examples/checks/turntable.yaml --allow "$PWD/examples/checks"
       - name: Install the wheel against the latest fastmcp and list tools through a client
         run: |
           uv run --isolated --no-project --with dist/*.whl --with 'fastmcp>=2.14.5,<5' python - <<'PY'

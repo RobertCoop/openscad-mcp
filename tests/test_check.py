@@ -217,3 +217,75 @@ class TestCheckReal:
         r = await check_fn(scad_file=str(project / "asm.scad"), mode="interference", parts=[{"name": "x", "code": "nope();"}, PARTS[0]])
         assert r["success"] is True  # unknown module warns and yields empty geometry
         assert "x" in r.get("empty_parts", [])
+        # An empty part must never produce a silent green: it is UNRESOLVED
+        empty_rows = [f for f in r["findings"] if f.get("state") == "empty"]
+        assert empty_rows and empty_rows[0]["subject"] == ["x"]
+        assert r["exit_code"] == 2
+
+
+@needs_openscad
+class TestReviewFixes:
+    async def test_rays_ignore_ghost_parts(self, project):
+        parts = [PARTS[0], {"name": "c", "code": "c();", "ghost": True}]
+        r = await check_fn(
+            scad_file=str(project / "asm.scad"), mode="rules", parts=parts,
+            checks=[{"rule": "ray", "origin": [7, 7, 50], "direction": [0, 0, -1], "first_hit": "a"}],
+        )
+        row = [f for f in r["findings"] if f["rule"] == "ray"][0]
+        assert row["status"] == "PASS", row  # the ghost c above a is not hit
+        assert row["first_hit"]["part"] == "a"
+
+    async def test_quality_note_when_model_owns_fn(self, project):
+        r = await check_fn(scad_file=str(project / "asm.scad"), mode="clearance", parts=PARTS[:2])
+        q = r["findings"][0]["quality"]
+        assert q["fn"] is None and "model's own" in q["note"]
+        r2 = await check_fn(scad_file=str(project / "asm.scad"), mode="clearance", parts=PARTS[:2], quality=32)
+        assert r2["findings"][0]["quality"]["fn"] == 32
+
+    async def test_check_openscad_has_success_key(self, project):
+        out = await server.check_openscad.fn()
+        assert out["success"] is True and out["installed"] is True
+
+    async def test_render_accepts_integer_quality(self, project):
+        out = await server.render.fn(scad_file=str(project / "asm.scad"), quality=16)
+        assert json.loads([x for x in out if isinstance(x, str)][-1])["success"] is True
+
+    async def test_measure_parts_honours_place(self, project):
+        r = await measure_fn(
+            scad_file=str(project / "asm.scad"), mode="parts",
+            parts=[{"name": "a", "code": "a();", "place": "translate([50, 0, 0])"}],
+        )
+        assert r["success"] is True, r
+        assert r["parts"][0]["bbox_min"] == pytest.approx([50, 0, 0])
+        assert r["parts"][0]["placed"] is True
+        assert r["frame"] == "assembly"
+
+
+class TestToolUnwrapping:
+    """Internal callers must work whether @mcp.tool returns a FunctionTool
+    (fastmcp 2.x, exposes .fn) or the bare function (fastmcp 4.x)."""
+
+    def test_tool_fn_unwraps_function_tool(self):
+        from openscad_mcp.server import _tool_fn, check, measure
+
+        for tool in (check, measure):
+            fn = _tool_fn(tool)
+            assert callable(fn)
+            assert not hasattr(fn, "fn")
+
+    def test_tool_fn_passes_bare_function_through(self):
+        from openscad_mcp.server import _tool_fn
+
+        async def bare():
+            return 1
+
+        assert _tool_fn(bare) is bare
+
+    def test_no_direct_fn_calls_in_server(self):
+        import re
+        from pathlib import Path
+
+        import openscad_mcp.server as server
+
+        src = Path(server.__file__).read_text()
+        assert not re.search(r"\b(check|measure|render|validate)\.fn\(", src)

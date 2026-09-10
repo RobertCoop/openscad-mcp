@@ -822,8 +822,7 @@ _CONVENTIONS: list[dict[str, Any]] = [
     ),
     _convention(
         "measure, do not eyeball",
-        "Verify dimensions with the analyze_model measurement tool, not by looking at the "
-        "rendered image.",
+        "Verify dimensions with the measure tool, not by looking at the rendered image.",
         "A render has no scale and a perspective camera distorts it. Two parts that look "
         "flush in a preview can be a millimetre apart. Measure.",
         ["measure", "verify", "analyze", "bounding box", "check"],

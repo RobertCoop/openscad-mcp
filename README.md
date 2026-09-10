@@ -1,12 +1,17 @@
 # OpenSCAD MCP Server
 
+[![PyPI](https://img.shields.io/pypi/v/openscad-mcp)](https://pypi.org/project/openscad-mcp/)
+[![CI](https://github.com/robertcoop/openscad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/robertcoop/openscad-mcp/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/openscad-mcp)](https://pypi.org/project/openscad-mcp/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
-[![FastMCP](https://img.shields.io/badge/FastMCP-2.14.5-green)](https://gofastmcp.com)
-[![Tests](https://img.shields.io/badge/tests-300%20passing-brightgreen)](#testing)
-[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives AI assistants the ability to render, export, and analyze 3D models using [OpenSCAD](https://openscad.org). Built with [FastMCP](https://gofastmcp.com) for Python.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets AI
+assistants design 3D-printable parts and assemblies in [OpenSCAD](https://openscad.org):
+render with a stated scale, measure exact geometry, check assemblies for interference
+and clearance, extract holes and features, judge printability, and export. Built with
+[FastMCP](https://gofastmcp.com) for Python; OpenSCAD 2021.01 is the supported floor
+and dev snapshots are used when present.
 
 ## Prerequisites
 
@@ -169,33 +174,39 @@ be installed as a Claude Code plugin (`.claude-plugin/`).
 
 ### Tool Parameters
 
-#### `render`
+[API.md](./API.md) documents every tool and every parameter. Four parameters
+account for most of the questions:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `scad_content` | string | — | OpenSCAD code to render* |
-| `scad_file` | string | — | Path to `.scad` file* |
-| `mode` | string | `views` | `views`, `section`, `parts`, `compare` |
-| `views` | list | `["isometric"]` | Any of `front`, `back`, `left`, `right`, `top`, `bottom`, `isometric`, `dimetric` |
-| `camera_position` / `camera_target` / `camera_up` | list/string | — | Custom camera (used when `views` is omitted) |
-| `grounded` | bool | `false` | Measure the model, then render orthographically with a stated mm/px scale |
-| `annotate` | bool | `false` | Scale bar, axis triad, bbox dimensions (implies `grounded`) |
-| `section_axis` / `section_offset` | string / number | `z` / `0` | Cut plane for `mode=section` |
-| `parts` / `isolate` | list / string | — | `[{"name": "lid", "code": "lid();"}]` for `mode=parts` |
-| `variables_after` / `scad_content_after` | dict / string | — | The "after" side for `mode=compare` |
-| `image_size` | list/string | `[800,600]` | Output dimensions, clamped to 1568 px |
-| `color_scheme` | string | `Cornfield` | OpenSCAD color scheme |
-| `variables` | dict | `{}` | OpenSCAD variables |
-| `quality` | string | — | `draft`, `normal`, or `high` |
-| `include_paths` | list | — | Extra include directories (via `OPENSCADPATH`) |
+- **`parts`** — a list of `{"name": ..., "code": ..., "place": ...}` objects,
+  accepted by `render(mode="parts")`, `measure(mode="parts")`, `check` and
+  `export_model`. `code` is the statement that instantiates the part
+  (`lid();`) and `place` is an optional OpenSCAD transform wrapped around it
+  (`translate([0,0,20])`). Each part is exported on its own, so its identity
+  survives; an assembly is never unioned. `measure(mode="parts")` measures each
+  part in its placed position (the response says `frame: "assembly"`), the
+  same grammar `check`, `render` and `export_model` use.
+- **`quality`** — `draft`, `normal`, `high`, or an integer `$fn`. It sets
+  `$fn`/`$fa`/`$fs` for the run. It is a correctness knob, not only a speed
+  one: `check` reports a distance smaller than the tessellation error bound as
+  `UNRESOLVED` rather than guessing, and the fix is a higher quality.
+- **`variables`** — a dict injected as OpenSCAD variables. In the wrapped modes
+  (section, parts, `scad_eval`) they are appended to the wrapped module body
+  rather than passed with `-D`, and they are injected at file scope as well, so
+  a constant derived inside an included file still sees them. This is how you
+  set a `$preview` guard variable for an export.
+- **`include_paths`** — extra directories added to `OPENSCADPATH`. When
+  `MCP_ALLOWED_PATHS` is set, every entry is validated against it, as is every
+  file OpenSCAD actually reads.
 
-Each image costs roughly 640 vision tokens at 800x600; ask for the views that
-answer a question rather than all of them. Auto-fit renders (`grounded=false`)
-have no recoverable absolute scale, which the digest states.
+Exactly one of `scad_content` or `scad_file` is required by every tool that
+takes source. All parameter parsers accept multiple input formats (JSON
+strings, lists, dicts, CSV) for AI assistant compatibility.
 
-*Exactly one of `scad_content` or `scad_file` must be provided.
-
-All parameter parsers accept multiple input formats (JSON strings, lists, dicts, CSV) for AI assistant compatibility.
+Each image costs roughly 640 vision tokens at 800x600, and image sizes are
+clamped to 1568 px on the long edge, above which vision models downscale
+anyway. Ask for the views that answer a question rather than all of them.
+Auto-fit renders (`grounded=false`) have no recoverable absolute scale, which
+the digest states.
 
 ## Configuration
 
@@ -299,20 +310,25 @@ Set `MCP_HARD_WARNINGS=true` to restore the flag.
 git clone https://github.com/robertcoop/openscad-mcp.git
 cd openscad-mcp
 
-# Install dependencies
-uv sync --dev
+# Install dependencies (the dev extra; there is no dependency-groups table,
+# so `uv sync --dev` would remove pytest, ruff, black and mypy)
+uv sync --extra dev
 
 # Run the server
 uv run openscad-mcp
 
+# Run the assembly checker on a check file
+uv run openscad-mcp check examples/checks/turntable.yaml
+
 # Run tests
 uv run pytest
 
-# Lint & format
+# Lint & format. The tree carries pre-existing findings, so expect noise;
+# CI gates only on `ruff check --select F,E9,B src/openscad_mcp/`.
 uv run ruff check src/ tests/
 uv run black --check src/ tests/
 
-# Type check
+# Type check (also not clean today)
 uv run mypy src/
 ```
 
@@ -321,31 +337,56 @@ uv run mypy src/
 ```
 openscad-mcp/
 ├── src/openscad_mcp/
-│   ├── __init__.py          # Package exports
-│   ├── server.py            # FastMCP server, all MCP tools and helpers
+│   ├── server.py            # FastMCP server, the 12 tools, rendering, cache, CLI
+│   ├── assembly.py          # Part/Frame/Assembly model and the check-file grammar
+│   ├── checks.py            # RuleEngine: the rules a check file can ask for
+│   ├── geom.py              # Mesh kernel: BVH, tri-tri distance, winding number, sweeps
+│   ├── csgfeatures.py       # CSG-dump parser: holes, bosses, cross-part alignment
+│   ├── massprops.py         # Mass, centre of mass, inertia by tetrahedra
+│   ├── printability.py      # Overhangs, wall thickness, islands, orientation candidates
+│   ├── analysis.py          # Static analysis: BOSL2 $var shadowing lint, constant tracing
+│   ├── parts_catalog.py     # Purchased-parts catalog loader and self-check
+│   ├── parts/*.scad         # One generated BOSL2 file per catalogued part
+│   ├── threemf.py           # Multi-object 3MF writer
+│   ├── wrappers.py          # Source-level wrappers: include hoisting, variable injection
+│   ├── diagnostics.py       # stderr -> Diagnostics; -d deps parsing; repair hints
+│   ├── camera.py            # Orthographic camera model, fit, annotation, spatial digest
+│   ├── mesh.py              # Stdlib STL/SVG analysis: welding, components, volumes
+│   ├── reference.py         # Sourced engineering data: fits, fasteners, inserts, DFM
 │   ├── types.py             # Pydantic models and enums
-│   └── utils/
-│       └── config.py        # Configuration with env/YAML/dotenv support
-├── tests/                   # 300 tests, 80%+ coverage
-├── pyproject.toml
-└── README.md
+│   └── utils/config.py      # Configuration with env/YAML/dotenv support
+├── tests/                   # ~1,500 tests; 80% coverage floor
+├── evals/                   # Deterministic geometry eval harness, 15 tasks
+├── examples/checks/         # A worked check file and its model
+├── skills/openscad-design/  # Claude Code skill: the design loop
+└── .claude-plugin/          # Claude Code plugin manifest
 ```
 
 ### Testing
 
 ```bash
-# Run all tests with coverage
+# Run all tests with coverage (about 1,500 tests, roughly a minute)
 uv run pytest
 
-# Run specific markers
+# Run specific markers: unit, config, integration, slow, performance, edge, render
 uv run pytest -m unit
 uv run pytest -m performance
+uv run pytest -m "not slow"
 
-# Run a single file
-uv run pytest tests/test_helpers.py -v
+# Run a single file, without the coverage gate
+uv run pytest tests/test_helpers.py -v --no-cov
 ```
 
-Tests mock the OpenSCAD subprocess — no OpenSCAD installation required to run them. Coverage target: 80% minimum.
+Most tests mock the OpenSCAD subprocess, so no OpenSCAD installation is needed
+to run the suite. A mock that stands in for a render has to write both output
+files OpenSCAD would have written: the `-o` target and the `-d` dependency file
+that the cache manifest is built from. Tests that do need the real binary skip
+themselves when it is absent.
+
+CI runs the suite on Python 3.10 and 3.12 with OpenSCAD 2021.01 and BOSL2
+installed, under `xvfb-run` because PNG export on 2021.01 needs a display. It
+also builds the wheel, installs it in a clean environment, and asserts that a
+client sees exactly 12 tools. Coverage floor: 80%.
 
 ## Troubleshooting
 
@@ -378,6 +419,64 @@ Increase the timeout:
 export MCP_RENDER_TIMEOUT=600
 ```
 
+### "Path not allowed" / "outside the allowed paths"
+
+`MCP_ALLOWED_PATHS` is set and the file is not under one of its roots. The
+check covers arguments and, separately, every file OpenSCAD actually opened, so
+a model that lives inside an allowed root but does `include <../shared/lib.scad>`
+outside it is refused and the output is withheld. Add both roots:
+
+```bash
+export MCP_ALLOWED_PATHS="$HOME/cad:$HOME/cad-shared"
+```
+
+Leaving the variable unset disables path validation entirely, which the server
+logs a warning about at startup. See [Threat model](#threat-model).
+
+### An export or a measurement comes back empty
+
+The usual cause is a `$preview` guard: a file that instantiates its geometry
+only inside `if ($preview)` renders in the GUI and exports nothing, because
+`$preview` is false for a render to a file. Pass the guard variable explicitly:
+
+```
+measure(scad_file="part.scad", variables={"$preview": true})
+```
+
+A `difference()` whose first child is smaller than what follows also yields
+nothing. `validate(mode="syntax")` will not catch either one; the exit code is
+0 in both cases.
+
+### `check` rows say `UNRESOLVED`
+
+The distance in question is smaller than the tessellation error of the mesh, so
+the answer would be an artefact of `$fn` rather than of the design. Re-run with
+`quality="high"` or an explicit integer `$fn`. Every row reports the `quality.fn`
+it was computed at.
+
+### A result looks stale
+
+Renders are cached under `~/.cache/openscad-mcp/`, keyed on every render
+parameter plus a manifest of every file OpenSCAD read. Editing an included file
+normally invalidates the entry, but if a response says `cached: true` and the
+number disagrees with the source, clear it:
+
+```
+clear_cache()
+```
+
+### Renders fail on a headless machine
+
+OpenSCAD 2021.01 needs a display to export PNG even in headless mode. Run the
+server under a virtual framebuffer:
+
+```bash
+xvfb-run -a uv run openscad-mcp
+```
+
+Exports, measurements and checks produce meshes rather than images and do not
+need a display.
+
 ## Contributing
 
 1. Fork the repository
@@ -388,12 +487,23 @@ export MCP_RENDER_TIMEOUT=600
 
 Commit style: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
+[CONTRIBUTING.md](./CONTRIBUTING.md) covers the module map, how the tests mock
+OpenSCAD, the design rules that should not be undone, and how to add a
+parts-catalog entry or a check rule.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE)
 
 ## Acknowledgments
 
+- [OpenSCAD](https://openscad.org) — Programmable CAD software. Everything here
+  is a wrapper around its CLI.
 - [FastMCP](https://gofastmcp.com) — Python MCP framework
-- [OpenSCAD](https://openscad.org) — Programmable CAD software
 - [Model Context Protocol](https://modelcontextprotocol.io) — The MCP specification
+- [BOSL2](https://github.com/BelfrySCAD/BOSL2) — Used, not vendored, by the
+  purchased-parts catalog and by the BOSL2 anchor probe. BSD-2-Clause; install
+  it separately.
+- Dimensional data in `reference` and `parts` is cited entry by entry, with a
+  confidence label on every number. See
+  [src/openscad_mcp/parts/README.md](./src/openscad_mcp/parts/README.md).

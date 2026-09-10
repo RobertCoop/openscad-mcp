@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenSCAD MCP Server — a Python MCP (Model Context Protocol) server built with FastMCP that exposes OpenSCAD 3D rendering capabilities to AI assistants. It wraps the OpenSCAD CLI, rendering SCAD code to PNG images and returning results as base64 or file paths.
+OpenSCAD MCP Server — a Python MCP (Model Context Protocol) server built with FastMCP that wraps the OpenSCAD CLI. It renders `.scad` source to PNG, exports meshes, returns exact measurements from the exported geometry, and checks assemblies. 12 tools; the design principle is *numbers decide, pictures confirm*.
 
 **External dependency**: OpenSCAD must be installed on the system. The server auto-detects it via PATH or common install locations.
 
@@ -30,7 +30,7 @@ uv run pytest -m "not slow"
 uv run pytest tests/test_openscad_mcp.py
 
 # Run a single test
-uv run pytest tests/test_openscad_mcp.py::TestParameterParsers::test_parse_camera_param_list
+uv run pytest tests/test_openscad_mcp.py::TestParameterParsers::test_parse_list_param_with_csv_string
 
 # Lint
 uv run ruff check src/ tests/
@@ -51,7 +51,7 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 
 - **`mcp = FastMCP("OpenSCAD MCP Server")`** — the server instance
 - **`render_scad_to_png()`** — synchronous OpenSCAD call returning a `RenderResult` (base64 PNG + parsed `Diagnostics` + cache/dependency info). The image is returned even when diagnostics contain errors; tools compute `success` from the diagnostics, never from the exit code
-- **`_evaluate_scad()`** — shared runner for `export_model`, `analyze_model`, `validate_scad`: security checks, `-d` dependency closure, stderr parsing
+- **`_evaluate_scad()`** — shared runner for every non-render OpenSCAD call (`export_model`, `measure`, `validate`, `scad_eval`, `check`): security checks, `-d` dependency closure, stderr parsing
 - **`_run_openscad()`** — every subprocess goes through this: timeout with partial stderr kept, `RLIMIT_AS` via an `sh -c 'ulimit -v'` exec wrapper (never `preexec_fn`), new session
 - **`find_openscad()` / `get_openscad_capabilities()`** — memoised discovery (stable and `openscad-nightly` layouts, newest version wins) plus a cached capability record
 - **Parameter parsers** (`parse_camera_param`, `parse_list_param`, `parse_dict_param`, `parse_image_size_param`) — accept flexible input formats (JSON strings, lists, dicts, CSV) for AI assistant compatibility
@@ -122,9 +122,10 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - Tests mock OpenSCAD subprocess calls; they don't require OpenSCAD installed. Mocks that emulate a render should write the `-o` file and the `-d` dependency file (see `_write_outputs` in `tests/test_correctness_fixes.py`)
 - `conftest.py` has an `autouse` fixture (`reset_environment`) that clears env vars, temp dirs, and the memoised OpenSCAD discovery between tests
 - Tools accept a bare base64 string from a mocked `render_scad_to_png` (`_as_render_result`), so older mocks keep working
-- **FunctionTool pattern**: FastMCP's `@mcp.tool()` wraps functions as `FunctionTool` objects. In tests, access the underlying function via `render_single.fn` (e.g., `render_fn = render_single.fn if hasattr(render_single, 'fn') else render_single`)
+- **FunctionTool pattern**: on fastmcp 2.x `@mcp.tool()` wraps functions as `FunctionTool` objects (coroutine behind `.fn`); on fastmcp 4.x it returns the bare function. In tests use `render_fn = render.fn if hasattr(render, "fn") else render`; inside `server.py` call other tools through `_tool_fn(tool)(...)`, never `tool.fn(...)`.
 - **Caching in tests**: When testing `render_scad_to_png` command construction, disable caching in the config to prevent cache hits from skipping subprocess calls
-- Custom markers: `unit`, `integration`, `performance`, `slow`, `edge`, `smoke`, `mcp`, `render`, `config`
+- ~1,500 tests. Markers that actually select something: `unit`, `config`, `integration`, `slow`, `performance`, `edge`, `render`. They are declared in the root `pytest.ini` and topped up by `pytest_configure` in `tests/conftest.py`; `--strict-markers` is on, so a new marker needs declaring in one of those two places
+- Tests that need the real binary skip when OpenSCAD is absent. CI installs OpenSCAD 2021.01 and BOSL2 and runs under `xvfb-run` (PNG export on 2021.01 needs a display)
 
 ## Key Design Decisions
 
@@ -133,11 +134,10 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **`--hardwarnings` is off by default** (`rendering.hard_warnings`): it aborts evaluation at the first warning while exiting 0, blanking renders and truncating echo output. Warnings surface through diagnostics instead. Never add it back to echo-bearing paths.
 - **`Volumes:` in the CGAL banner is not a body count**: a hollow shell and two disjoint cubes both report 3. Report it as `nef_volumes`; gate manifoldness on `Simple:` only.
 - **Framing**: `render` auto-fits (`--autocenter --viewall`) unless `grounded=true`; the default is a single isometric view because each image costs ~640 vision tokens. Auto-fit destroys absolute scale, so the digest says "scale: unknown" unless grounded.
-- **Tool surface budget**: 15 tools, about 17k chars of schema; a feature is a *mode* of an existing tool until it proves it needs to be a tool (tool-selection accuracy degrades past ~30 tools). `tests/test_correctness_fixes.py` enforces the budget.
 - **Wrapped modes cannot use `-D`**: for section/parts/eval the model text is inlined inside a module, so variables are injected as assignments appended to that module body (verified: `-D` is ignored there, appended assignments override silently). Never put `include`/`use` inside the module: hoist them.
 - **`$preview` guards**: files that instantiate geometry only under `if ($preview)` export nothing; sections and measurements need the guard variable passed via `variables`.
 - **Fix by private copy or rewrite**: when a toolchain limitation blocks a correct answer (e.g. BOSL2 `attach()` across `use <>`), the server may evaluate a patched private copy or, when there are no name collisions, rewrite the project file (`validate(mode=includes, autofix=true)`). Correctness outranks preserving formatting.
-- **Tool surface**: 12 tools. A feature is a mode until it proves it needs a tool; `check` earned its slot because its subject is a relation between two parts and `mode=rules` is a distinct verb.
+- **Tool surface budget**: 12 tools. A feature is a *mode* of an existing tool until it proves it needs a tool, because tool-selection accuracy degrades as the surface grows; `check` earned its slot because its subject is a relation between two parts and `mode=rules` is a distinct verb. `tests/test_correctness_fixes.py::TestToolSurfaceBudget` caps the total schema at 21,000 chars and any one tool at 3,600.
 - **Response size management**: Large renders auto-save to files instead of returning base64 to avoid oversized MCP responses.
 - **Camera format**: 6-value eye+center format (`--camera=eye_x,eye_y,eye_z,center_x,center_y,center_z`), not the 7-value translate+rotate format.
 - **Render caching**: Enabled by default, validated against a per-entry dependency manifest (see Architecture). Cache stored in `~/.cache/openscad-mcp/`. Never cache a render without recording what it read.
@@ -147,7 +147,8 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **Ruff**: line-length 100, Python 3.10 target, rules: E, W, F, I, B, C4, UP, ARG, SIM
 - **Black**: line-length 100
 - **Mypy**: Python 3.10, `ignore_missing_imports = true`
-- **Coverage**: 80% minimum configured (`--cov-fail-under=80`)
+- **Coverage**: 80% minimum (`--cov-fail-under=80` in the root `pytest.ini`, which is the config pytest picks up from the repo root)
+- **Lint debt**: `ruff check src/ tests/` reports ~1,280 pre-existing findings and `black --check` wants to reformat 18 files. CI only gates on `ruff check --select F,E9,B src/openscad_mcp/`. Write new code clean; do not reformat the tree wholesale in an unrelated change
 
 ## Conventions
 

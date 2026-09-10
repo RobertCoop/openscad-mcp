@@ -61,7 +61,7 @@ The workflow for an A/B run:
    ```
 
 2. Run your agent once per task under condition **A** (say, the MCP server with
-   `render_single` disabled) and save its final OpenSCAD answer as
+   `render` disabled) and save its final OpenSCAD answer as
    `runs/a/<task_id>.scad`. Save only the code, no markdown fences.
 
 3. Repeat under condition **B** with the feature enabled, into `runs/b/`.
@@ -152,7 +152,7 @@ checks within a task are not independent.
 parts with stated dimensions, chosen so that correctness is measurable. They say nothing
 about aesthetics, parametric style, or how a model handles an underspecified request.
 
-**The tool-selection question is a separate experiment.** Whether an agent does better
-with 13, 15, or 44 exposed MCP tools is about tool choice and context budget, not about
-geometry, and it needs its own harness that records which tools were called. It is not
-what this measures.
+**The tool-selection question is a separate experiment.** The server currently exposes
+12 tools. Whether an agent does better with 12, 20, or 44 of them is about tool choice
+and context budget, not about geometry, and it needs its own harness that records which
+tools were called. It is not what this measures.

@@ -501,7 +501,7 @@ class TestCacheDependencyValidation:
         cache_dir = server.get_config().cache.directory
         assert list(cache_dir.glob("*.json"))
         result = await clear_cache_fn()
-        assert result["cleared_files"] == 1
+        assert result["cleared_files"] == 2  # the PNG and its dependency manifest
         assert not list(cache_dir.glob("*.json"))
         assert not list(cache_dir.glob("*.png"))
 
