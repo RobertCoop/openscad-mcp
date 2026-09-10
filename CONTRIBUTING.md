@@ -473,7 +473,12 @@ Maintainers only.
 
 `publish.yml` takes it from there: it checks the tag against the package version
 and fails if they disagree, builds the sdist and wheel, smoke-tests the wheel in
-a clean environment, and uploads to PyPI via trusted publishing. There are no
+a clean environment, uploads to PyPI via trusted publishing, and then creates
+the GitHub release for the tag. The release notes are the `## [X.Y.Z]` section
+of `CHANGELOG.md` (`.github/scripts/release_notes.sh` extracts it; GitHub's
+generated notes are the fallback when the section is missing), the sdist and
+wheel are attached, and the release is marked latest. Re-running the workflow
+on an existing release re-uploads the assets rather than failing. There are no
 secrets to configure.
 
 ## Reporting Issues

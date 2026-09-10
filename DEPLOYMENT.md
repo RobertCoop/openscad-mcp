@@ -122,9 +122,9 @@ same shape. Any setting from the table below goes in `env`:
 }
 ```
 
-That runs a checkout and works today. After the PyPI release, replace the
-command and args with `"command": "uvx"` and `"args": ["openscad-mcp@0.6.1"]`
-and leave `env` alone. `MCP_ALLOWED_PATHS` is separated by `:` on POSIX and
+That runs a checkout. For the published package, replace the command and args
+with `"command": "uvx"` and `"args": ["openscad-mcp@0.6.1"]` and leave `env`
+alone. `MCP_ALLOWED_PATHS` is separated by `:` on POSIX and
 `;` on Windows, and must include the library directories, not just the
 project. Restart the client after editing; it holds the server open.
 

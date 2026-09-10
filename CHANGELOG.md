@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Nothing yet
+- `publish.yml` creates the GitHub release for each published tag, with the
+  matching `CHANGELOG.md` section as notes and the sdist and wheel attached.
+
+### Changed
+- CI skips wall-clock benchmarks (`-m "not performance"`) and its F/E9/B lint
+  gate is clean; the performance bounds scale by `PERF_SLACK` locally.
 
 ## [0.6.1] - 2026-09-10
 

@@ -3,7 +3,9 @@
 # Prerequisites, done once on pypi.org: register this repository as a trusted
 # publisher for the project "openscad-mcp" with workflow name "publish.yml"
 # and environment "pypi". Then `git tag v0.6.1 && git push origin v0.6.1`
-# builds, smoke-tests the wheel, and uploads it.
+# builds, smoke-tests the wheel, uploads it, and creates the GitHub release
+# for the tag with the matching CHANGELOG.md section as its notes and the
+# sdist and wheel attached.
 name: publish
 
 on:
@@ -52,3 +54,33 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always
+
+  release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if .github/scripts/release_notes.sh "$version" > notes.md; then
+            notes_args="--notes-file notes.md"
+          else
+            echo "no CHANGELOG.md section for $version; using generated notes" >&2
+            notes_args="--generate-notes"
+          fi
+          # Re-running the workflow must not fail on an existing release.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "v$version" $notes_args --verify-tag --latest
+          fi
