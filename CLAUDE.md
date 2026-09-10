@@ -125,7 +125,7 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **FunctionTool pattern**: on fastmcp 2.x `@mcp.tool()` wraps functions as `FunctionTool` objects (coroutine behind `.fn`); on fastmcp 4.x it returns the bare function. In tests use `render_fn = render.fn if hasattr(render, "fn") else render`; inside `server.py` call other tools through `_tool_fn(tool)(...)`, never `tool.fn(...)`.
 - **Caching in tests**: When testing `render_scad_to_png` command construction, disable caching in the config to prevent cache hits from skipping subprocess calls
 - ~1,500 tests. Markers that actually select something: `unit`, `config`, `integration`, `slow`, `performance`, `edge`, `render`. They are declared in the root `pytest.ini` and topped up by `pytest_configure` in `tests/conftest.py`; `--strict-markers` is on, so a new marker needs declaring in one of those two places
-- Tests that need the real binary skip when OpenSCAD is absent. CI installs OpenSCAD 2021.01 and BOSL2 and runs under `xvfb-run` (PNG export on 2021.01 needs a display)
+- Tests that need the real binary skip when OpenSCAD is absent. CI installs OpenSCAD 2021.01 and BOSL2 and runs under `xvfb-run` (PNG export on 2021.01 needs a display). CI runs `-m "not performance"`: the wall-clock benchmarks are for developer machines (their bounds scale by `PERF_SLACK` from `tests/conftest.py` under coverage tracing or `CI`), and a shared runner under contention has taken 26x longer than a workstation on the same test
 
 ## Key Design Decisions
 

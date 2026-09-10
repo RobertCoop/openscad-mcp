@@ -30,7 +30,10 @@ jobs:
         run: uv sync --extra dev
       - name: Run tests
         # PNG export on OpenSCAD 2021.01 needs a display; xvfb provides one.
-        run: xvfb-run -a uv run pytest -q -p no:cacheprovider
+        # Wall-clock benchmarks (-m performance) are skipped: a shared runner
+        # under contention has taken 26x longer than a workstation on the same
+        # test, which says nothing about the code. Run them locally.
+        run: xvfb-run -a uv run pytest -q -p no:cacheprovider -m "not performance"
       - name: Lint new modules
         run: uv run ruff check --select F,E9,B src/openscad_mcp/
 
