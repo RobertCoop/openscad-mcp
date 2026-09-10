@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Nothing yet
 
+## [0.6.1] - 2026-09-10
+
+### Added
+- Published to PyPI: install with `uvx openscad-mcp`. A GitHub Actions
+  workflow (`publish.yml`) builds, smoke-tests and uploads on every `v*`
+  tag through PyPI trusted publishing; `ci.yml` runs the tests and a
+  PyPI-visible package check (build, clean-environment install, tool listing
+  through a client) on every push.
+
+### Changed
+- Repository moved to `github.com/robertcoop/openscad-mcp`; all links,
+  manifests and install snippets updated. Client configs use
+  `uvx openscad-mcp` instead of a git URL.
+- `fastmcp` is bounded below 5; the server is verified on fastmcp 4.0.3.
+
 ## [0.6.0] - 2026-09-10
 
 Assemblies with part identity, a shared mesh kernel, features, printability,
@@ -311,20 +326,22 @@ For questions and support, please use:
 - GitHub Issues: https://github.com/yourusername/openscad-mcp-server/issues
 - Discussions: https://github.com/yourusername/openscad-mcp-server/discussions
 
-[Unreleased]: https://github.com/quellant/openscad-mcp/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/quellant/openscad-mcp/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/quellant/openscad-mcp/releases/tag/v0.2.0
-[0.1.0]: https://github.com/quellant/openscad-mcp/releases/tag/v0.1.0
-[0.0.1-alpha]: https://github.com/quellant/openscad-mcp/releases/tag/v0.0.1-alpha
+[Unreleased]: https://github.com/robertcoop/openscad-mcp/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/robertcoop/openscad-mcp/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/robertcoop/openscad-mcp/compare/v0.3.0...v0.6.0
+[0.3.0]: https://github.com/robertcoop/openscad-mcp/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/robertcoop/openscad-mcp/releases/tag/v0.2.0
+[0.1.0]: https://github.com/robertcoop/openscad-mcp/releases/tag/v0.1.0
+[0.0.1-alpha]: https://github.com/robertcoop/openscad-mcp/releases/tag/v0.0.1-alpha
 
-[#2]: https://github.com/quellant/openscad-mcp/pull/2
-[#3]: https://github.com/quellant/openscad-mcp/issues/3
-[#5]: https://github.com/quellant/openscad-mcp/issues/5
-[#6]: https://github.com/quellant/openscad-mcp/pull/6
-[#7]: https://github.com/quellant/openscad-mcp/issues/7
-[#8]: https://github.com/quellant/openscad-mcp/pull/8
-[#9]: https://github.com/quellant/openscad-mcp/pull/9
-[#10]: https://github.com/quellant/openscad-mcp/pull/10
+[#2]: https://github.com/robertcoop/openscad-mcp/pull/2
+[#3]: https://github.com/robertcoop/openscad-mcp/issues/3
+[#5]: https://github.com/robertcoop/openscad-mcp/issues/5
+[#6]: https://github.com/robertcoop/openscad-mcp/pull/6
+[#7]: https://github.com/robertcoop/openscad-mcp/issues/7
+[#8]: https://github.com/robertcoop/openscad-mcp/pull/8
+[#9]: https://github.com/robertcoop/openscad-mcp/pull/9
+[#10]: https://github.com/robertcoop/openscad-mcp/pull/10
 [@dawkacz]: https://github.com/dawkacz
 [@frankhommers]: https://github.com/frankhommers
 [@NodeGuy]: https://github.com/NodeGuy

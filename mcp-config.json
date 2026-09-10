@@ -2,11 +2,7 @@
   "mcpServers": {
     "openscad": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "${CLAUDE_PLUGIN_ROOT}",
-        "openscad-mcp"
-      ]
+      "args": ["openscad-mcp"]
     }
   }
 }

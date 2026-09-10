@@ -1,0 +1,62 @@
+# Continuous integration: tests against the locked dev environment, plus the
+# PyPI-visible check (the package builds and the wheel installs and imports in
+# a clean environment) so a broken sdist surfaces here, not at publish time.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install OpenSCAD 2021.01 and BOSL2 (real-binary tests; skipped when absent)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q openscad xvfb
+          mkdir -p ~/.local/share/OpenSCAD/libraries
+          git clone -q --depth 1 https://github.com/BelfrySCAD/BOSL2.git ~/.local/share/OpenSCAD/libraries/BOSL2
+          openscad --version
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run tests
+        # PNG export on OpenSCAD 2021.01 needs a display; xvfb provides one.
+        run: xvfb-run -a uv run pytest -q -p no:cacheprovider
+      - name: Lint new modules
+        run: uv run ruff check --select F,E9,B src/openscad_mcp/
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Install the wheel in a clean environment and import it
+        run: |
+          uv run --isolated --no-project --with dist/*.whl python -c \
+            "import openscad_mcp, openscad_mcp.server, openscad_mcp.parts_catalog as p; \
+             print(openscad_mcp.__version__, len(p.list_parts()), 'catalog parts')"
+          uv run --isolated --no-project --with dist/*.whl openscad-mcp check --help
+      - name: Install the wheel against the latest fastmcp and list tools through a client
+        run: |
+          uv run --isolated --no-project --with dist/*.whl --with 'fastmcp>=2.14.5,<5' python - <<'PY'
+          import asyncio
+          from fastmcp import Client
+          from openscad_mcp.server import mcp
+          async def main():
+              async with Client(mcp) as c:
+                  tools = await c.list_tools()
+                  assert len(tools) == 12, [t.name for t in tools]
+                  print("tools:", sorted(t.name for t in tools))
+          asyncio.run(main())
+          PY

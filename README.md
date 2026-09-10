@@ -15,27 +15,24 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gi
 
 ## Installation
 
+The server is published on PyPI as `openscad-mcp`, so [uv](https://docs.astral.sh/uv/)
+runs it with no clone and no virtualenv: `uvx openscad-mcp`. uv keeps a cached
+copy; `uv tool upgrade openscad-mcp` (or `uvx openscad-mcp@latest`) pulls a
+new release, and `uvx openscad-mcp@0.6.1` pins one.
+
 ### Claude Code
-
-`--refresh-package openscad-mcp` makes uv re-resolve the package from GitHub
-on every start, so a new release is picked up automatically the next time the
-server launches. Drop the flag to pin to whatever uv has cached, or add
-`@v0.6.0` after the URL to pin a release.
-
 
 Add the server with a single command:
 
 ```bash
-claude mcp add openscad --transport stdio -- \
-  uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+claude mcp add openscad --transport stdio -- uvx openscad-mcp
 ```
 
 Or, if OpenSCAD is not on your PATH:
 
 ```bash
 claude mcp add openscad --transport stdio \
-  --env OPENSCAD_PATH=/path/to/openscad -- \
-  uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+  --env OPENSCAD_PATH=/path/to/openscad -- uvx openscad-mcp
 ```
 
 Use the `--scope` flag to control where the configuration is saved:
@@ -45,6 +42,10 @@ Use the `--scope` flag to control where the configuration is saved:
 | Local (default) | `--scope local` | Available only to you in the current project |
 | Project | `--scope project` | Shared with the team via `.mcp.json` |
 | User | `--scope user` | Available to you across all projects |
+
+The repository is also a Claude Code plugin (skill plus server):
+`/plugin marketplace add robertcoop/openscad-mcp` then
+`/plugin install openscad-mcp@openscad-mcp`.
 
 ### Claude Desktop
 
@@ -57,13 +58,8 @@ Add to your configuration file:
 {
   "mcpServers": {
     "openscad": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--refresh-package", "openscad-mcp",
-        "--with", "git+https://github.com/quellant/openscad-mcp.git",
-        "openscad-mcp"
-      ],
+      "command": "uvx",
+      "args": ["openscad-mcp"],
       "env": {
         "OPENSCAD_PATH": "/usr/bin/openscad"
       }
@@ -82,13 +78,8 @@ Add a `.mcp.json` file to your project root:
 {
   "mcpServers": {
     "openscad": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--refresh-package", "openscad-mcp",
-        "--with", "git+https://github.com/quellant/openscad-mcp.git",
-        "openscad-mcp"
-      ]
+      "command": "uvx",
+      "args": ["openscad-mcp"]
     }
   }
 }
@@ -97,13 +88,19 @@ Add a `.mcp.json` file to your project root:
 ### Manual / Standalone
 
 ```bash
-# Run directly from GitHub (no install required)
-uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+# From PyPI (no install required)
+uvx openscad-mcp
+
+# The development version, straight from GitHub
+uvx --from git+https://github.com/robertcoop/openscad-mcp.git openscad-mcp
 
 # Or clone and run locally
-git clone https://github.com/quellant/openscad-mcp.git
+git clone https://github.com/robertcoop/openscad-mcp.git
 cd openscad-mcp
 uv run openscad-mcp
+
+# Run an assembly check file from a shell or a Makefile (exit code 0/1/2)
+uvx openscad-mcp check checks.yaml --allow /path/to/project
 ```
 
 ## Available Tools
@@ -299,7 +296,7 @@ Set `MCP_HARD_WARNINGS=true` to restore the flag.
 
 ```bash
 # Clone the repo
-git clone https://github.com/quellant/openscad-mcp.git
+git clone https://github.com/robertcoop/openscad-mcp.git
 cd openscad-mcp
 
 # Install dependencies
@@ -367,7 +364,7 @@ export OPENSCAD_PATH=/path/to/openscad
 
 ```bash
 # Verify the server starts correctly
-uv run --refresh-package openscad-mcp --with git+https://github.com/quellant/openscad-mcp.git openscad-mcp
+uvx openscad-mcp
 
 # In Claude Code, check MCP status
 /mcp

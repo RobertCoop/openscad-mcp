@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openscad-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "A Model Context Protocol (MCP) server for OpenSCAD 3D modeling and rendering"
 readme = "README.md"
 license = "MIT"
@@ -71,11 +71,11 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/quellant/openscad-mcp"
-Documentation = "https://github.com/quellant/openscad-mcp#readme"
-Repository = "https://github.com/quellant/openscad-mcp.git"
-Issues = "https://github.com/quellant/openscad-mcp/issues"
-Changelog = "https://github.com/quellant/openscad-mcp/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/robertcoop/openscad-mcp"
+Documentation = "https://github.com/robertcoop/openscad-mcp#readme"
+Repository = "https://github.com/robertcoop/openscad-mcp.git"
+Issues = "https://github.com/robertcoop/openscad-mcp/issues"
+Changelog = "https://github.com/robertcoop/openscad-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 openscad-mcp = "openscad_mcp.server:main"
