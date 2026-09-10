@@ -148,7 +148,7 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **Black**: line-length 100
 - **Mypy**: Python 3.10, `ignore_missing_imports = true`
 - **Coverage**: 80% minimum (`--cov-fail-under=80` in the root `pytest.ini`, which is the config pytest picks up from the repo root)
-- **Lint debt**: `ruff check src/ tests/` reports ~1,280 pre-existing findings and `black --check` wants to reformat 18 files. CI only gates on `ruff check --select F,E9,B src/openscad_mcp/`. Write new code clean; do not reformat the tree wholesale in an unrelated change
+- **Lint debt**: `ruff check src/ tests/` reports ~1,260 pre-existing findings (style rules) and `black --check` wants to reformat 18 files. CI gates on `ruff check --select F,E9,B src/openscad_mcp/`, which is clean and must stay clean. Write new code clean; do not reformat the tree wholesale in an unrelated change
 
 ## Conventions
 

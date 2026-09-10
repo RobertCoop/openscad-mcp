@@ -1118,9 +1118,9 @@ def parse_camera_param(param: Union[str, List[float], Dict[str, float], None], d
             elif isinstance(parsed, dict) and all(k in parsed for k in ["x", "y", "z"]):
                 return [float(parsed["x"]), float(parsed["y"]), float(parsed["z"])]
             else:
-                raise ValueError(f"Parsed value must be a list of 3 numbers or dict with x,y,z keys")
+                raise ValueError("Parsed value must be a list of 3 numbers or dict with x,y,z keys")
         except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Cannot parse '{param}' as camera parameter: {e}")
+            raise ValueError(f"Cannot parse '{param}' as camera parameter: {e}") from e
     
     raise ValueError(f"Unexpected type for camera parameter: {type(param)}")
 
@@ -1363,7 +1363,7 @@ def save_image_to_file(base64_data: str, filename: str, output_dir: Path) -> str
         
         return str(file_path)
     except Exception as e:
-        raise ValueError(f"Failed to save image to file: {e}")
+        raise ValueError(f"Failed to save image to file: {e}") from e
 
 
 def compress_base64_image(base64_data: str, quality: int = 85, optimize: bool = True) -> str:
@@ -1407,7 +1407,7 @@ def compress_base64_image(base64_data: str, quality: int = 85, optimize: bool = 
         compressed_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return compressed_data
     except Exception as e:
-        raise ValueError(f"Failed to compress image: {e}")
+        raise ValueError(f"Failed to compress image: {e}") from e
 
 
 def manage_response_size(
@@ -1457,8 +1457,7 @@ def manage_response_size(
         
         if current_size > max_size:
             # Try compression first
-            test_compressed = {}
-            for name, data in working_images[:1]:  # Test with first image
+            for _name, data in working_images[:1]:  # Test with first image
                 try:
                     compressed = compress_base64_image(data)
                     compression_ratio = len(compressed) / len(data)
@@ -2776,7 +2775,6 @@ def _draw_section_png(
     title: str,
 ) -> Tuple[bytes, float, Tuple[float, float, float, float]]:
     """Rasterise section polygons with Pillow. Returns (png, mm_per_px, bbox)."""
-    import io
 
     from PIL import ImageDraw
 
@@ -3193,7 +3191,7 @@ async def render(
 
             results = await asyncio.gather(*[_one(v) for v in view_list], return_exceptions=True)
             failed: Dict[str, str] = {}
-            for v, res in zip(view_list, results):
+            for v, res in zip(view_list, results, strict=False):
                 name = v or "custom"
                 if isinstance(res, Exception):
                     failed[name] = str(res)
@@ -3203,7 +3201,7 @@ async def render(
                 items.append(MCPImage(data=png, format="png"))
                 if "errors" not in meta:
                     meta.update({k: m[k] for k in ("errors", "warnings", "hints", "echo_output", "cached") if k in m})
-            meta["views"] = [v or "custom" for v, r in zip(view_list, results) if not isinstance(r, Exception)]
+            meta["views"] = [v or "custom" for v, r in zip(view_list, results, strict=False) if not isinstance(r, Exception)]
             if failed:
                 meta["failed_views"] = failed
             if bbox is not None:
@@ -3299,7 +3297,7 @@ async def render(
                 + (" (ghost)" if p.ghost or (isolate and p.name != isolate) else "")
                 for p in part_list
             )
-            for v, (png, digest, m) in zip(view_list2, results):
+            for v, (png, digest, m) in zip(view_list2, results, strict=False):
                 items.append(f"View: {v}\nparts: {legend}\n{digest}")
                 items.append(MCPImage(data=png, format="png"))
                 if "errors" not in meta:
@@ -3491,7 +3489,7 @@ async def measure(
                 per_part: List[Dict[str, Any]] = []
                 boxes: List[Tuple[str, Tuple[float, ...], Tuple[float, ...]]] = []
                 errors: List[str] = []
-                for p, out in zip(part_list, outcomes):
+                for p, out in zip(part_list, outcomes, strict=False):
                     if isinstance(out, Exception):
                         per_part.append({"name": p["name"], "error": str(out)})
                         errors.append(f"{p['name']}: {out}")
@@ -3732,7 +3730,7 @@ async def validate(
             diag = ev.diagnostics
             evaluated = collect_eval_results(diag.echo_output, len(exprs))
             results = []
-            for expr, r in zip(exprs, evaluated):
+            for expr, r in zip(exprs, evaluated, strict=False):
                 passed = r.get("evaluated") and r.get("value") is True
                 results.append({
                     "predicate": expr,
@@ -3873,7 +3871,7 @@ async def scad_eval(
             _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         diag = ev.diagnostics
         results = collect_eval_results(diag.echo_output, len(exprs))
-        for expr, r in zip(exprs, results):
+        for expr, r in zip(exprs, results, strict=False):
             r["expression"] = expr
         other_echo = [e for e in diag.echo_output if "__OPENSCAD_MCP_EVAL__" not in e]
         response: Dict[str, Any] = {
@@ -4076,7 +4074,7 @@ async def _export_parts(
     results = await asyncio.gather(*[_one(p) for p in asm.parts], return_exceptions=True)
     out: Dict[str, ExportedPart] = {}
     errors: List[str] = []
-    for part, res in zip(asm.parts, results):
+    for part, res in zip(asm.parts, results, strict=False):
         if isinstance(res, Exception):
             errors.append(str(res))
         else:
@@ -4303,7 +4301,6 @@ async def check(
     tessellation error bound are UNRESOLVED. volume=true cross-checks with
     OpenSCAD's intersection volume.
     """
-    from . import geom
     from .assembly import apply_expression_values, collect_expression_slots
     from .checks import Quality, RuleEngine, exit_code, summarize
 
@@ -4850,7 +4847,7 @@ async def _predicate_sweep(
     passes = [p["all_pass"] for p in points]
     monotonic = passes == sorted(passes) or passes == sorted(passes, reverse=True)
     crossing = None
-    for a, b in zip(points, points[1:]):
+    for a, b in zip(points, points[1:], strict=False):
         if a["all_pass"] != b["all_pass"]:
             crossing = {"between": [a["value"], b["value"]], "from_pass": a["all_pass"]}
             break

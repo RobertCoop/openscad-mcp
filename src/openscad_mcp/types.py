@@ -82,7 +82,7 @@ class Vector3D(BaseModel):
                     return parsed
             except (json.JSONDecodeError, ValueError):
                 # If JSON parsing fails, it might be a malformed string
-                raise ValueError(f"Cannot parse '{data}' as a valid Vector3D")
+                raise ValueError(f"Cannot parse '{data}' as a valid Vector3D") from None
 
         # If it's a list or tuple with 3 elements
         if isinstance(data, (list, tuple)) and len(data) == 3:
@@ -137,7 +137,7 @@ class ImageSize(BaseModel):
                     return parsed
             except (json.JSONDecodeError, ValueError):
                 # If JSON parsing fails, it might be a malformed string
-                raise ValueError(f"Cannot parse '{data}' as a valid ImageSize")
+                raise ValueError(f"Cannot parse '{data}' as a valid ImageSize") from None
 
         # If it's a list or tuple with 2 elements
         if isinstance(data, (list, tuple)) and len(data) == 2:
