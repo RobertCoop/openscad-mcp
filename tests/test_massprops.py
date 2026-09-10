@@ -15,7 +15,7 @@ import time
 
 # Timing guards catch quadratic regressions; under coverage tracing pure-Python
 # loops run several times slower, so the bounds are relaxed when a tracer is on.
-_PERF_SLACK = 6.0 if sys.gettrace() is not None else 1.0
+from tests.conftest import PERF_SLACK as _PERF_SLACK
 
 import pytest
 

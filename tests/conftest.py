@@ -8,6 +8,9 @@ Provides reusable test fixtures including:
 - Common test data
 """
 
+import os
+import sys
+
 import struct
 
 import pytest
@@ -18,6 +21,13 @@ from typing import Dict, Any
 from unittest.mock import Mock
 
 from openscad_mcp.utils.config import Config, CacheConfig, SecurityConfig, set_config
+
+
+# Performance bounds in the suites are calibrated on a developer machine.
+# Coverage tracing slows pure-Python loops several-fold, and shared CI runners
+# are around two to three times slower than a workstation, so the bounds are
+# scaled rather than skipped: a real regression is still an order of magnitude.
+PERF_SLACK = 6.0 if sys.gettrace() is not None else (3.0 if os.environ.get("CI") else 1.0)
 
 
 @pytest.fixture

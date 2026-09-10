@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from tests.conftest import PERF_SLACK as _PERF_SLACK
 from openscad_mcp.mesh import analyze_triangles
 from openscad_mcp.printability import PrintabilityFacts, analyze, orientation_candidates
 
@@ -759,11 +760,11 @@ class TestPerformance:
         elapsed = time.perf_counter() - start
 
         assert facts.triangle_count == len(tris)
-        assert elapsed < 3.0, f"analyze took {elapsed:.3f} s on {len(tris)} triangles"
+        assert elapsed < 3.0 * _PERF_SLACK, f"analyze took {elapsed:.3f} s on {len(tris)} triangles"
 
     def test_overhang_alone_is_much_cheaper_than_with_thickness(self):
         tris = openscad_sphere(20.0, 100, center=(0.0, 0.0, 25.0))
         start = time.perf_counter()
         analyze(tris, thickness=False)
         elapsed = time.perf_counter() - start
-        assert elapsed < 2.0, f"overhang-only took {elapsed:.3f} s on {len(tris)} triangles"
+        assert elapsed < 2.0 * _PERF_SLACK, f"overhang-only took {elapsed:.3f} s on {len(tris)} triangles"
