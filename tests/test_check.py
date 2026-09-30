@@ -580,3 +580,77 @@ class TestExpressionsReal:
         assert row["magnitude"]["required_mm"] == 2
         assert row["magnitude"]["distance_mm"] == pytest.approx(2.0, abs=1e-6)
         assert row["status"] == "PASS"
+
+
+class TestAlignmentTolerance:
+    """The alignment rule groups axes at its own tolerance_mm: no OpenSCAD needed."""
+
+    @staticmethod
+    def _rows(offset_mm, tolerance_mm, seen=None):
+        from openscad_mcp import csgfeatures as cf
+        from openscad_mcp.assembly import Assembly
+        from openscad_mcp.checks import RuleEngine
+        from tests.test_csgfeatures import PLATE_A_CSG
+
+        feats = cf.extract_features(PLATE_A_CSG).features
+        parts = {
+            "base": feats,
+            "ring": cf.transform_features(feats, cf._translation((offset_mm, 0.0, 0.0))),
+        }
+
+        def provider(tol):
+            if seen is not None:
+                seen.append(tol)
+            return cf.align_features(parts, tolerance_mm=tol)
+
+        engine = RuleEngine(Assembly(parts=[]), {}, Quality(fn=32), feature_provider=provider)
+        return engine.run([{"rule": "alignment", "tolerance_mm": tolerance_mm}])
+
+    def test_provider_receives_the_rule_tolerance(self):
+        seen = []
+        self._rows(0.15, 0.1, seen)
+        assert seen == [0.1]
+
+    def test_offset_above_the_rule_tolerance_fails(self):
+        rows = self._rows(0.15, 0.1)
+        assert [r["status"] for r in rows] == ["FAIL"] * 3
+        assert all(r["magnitude"]["offset_mm"] == pytest.approx(0.15, abs=1e-6) for r in rows)
+
+    def test_offset_within_the_rule_tolerance_passes(self):
+        rows = self._rows(0.15, 0.2)
+        assert [r["status"] for r in rows] == ["PASS"]
+        assert rows[0]["axes"] == 3
+
+
+ALIGN_MODEL = """
+OFF = 0.15;
+module plate() difference() {
+    cube([20, 20, 4]);
+    translate([10, 10, -1]) cylinder(d = 3.4, h = 6, $fn = 32);
+}
+module ring() translate([0, 0, 4]) difference() {
+    cube([20, 20, 3]);
+    translate([10 + OFF, 10, -1]) cylinder(d = 3.4, h = 5, $fn = 32);
+}
+"""
+
+
+@needs_openscad
+class TestAlignmentToleranceReal:
+    async def test_check_file_rule_tolerance_below_0_2_mm(self, project):
+        (project / "align.scad").write_text(ALIGN_MODEL)
+        r = await check_fn(
+            scad_file=str(project / "align.scad"),
+            mode="rules",
+            parts=[{"name": "plate", "code": "plate();"}, {"name": "ring", "code": "ring();"}],
+            checks=[
+                {"rule": "alignment", "tolerance_mm": 0.1},
+                {"rule": "alignment", "tolerance_mm": 0.2},
+            ],
+            quality=32,
+        )
+        assert r["success"] is True, r
+        rows = [f for f in r["findings"] if f["rule"] == "alignment"]
+        assert [x["status"] for x in rows] == ["FAIL", "PASS"]
+        assert rows[0]["magnitude"]["offset_mm"] == pytest.approx(0.15, abs=1e-3)
+        assert r["exit_code"] == 1
