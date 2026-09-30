@@ -127,6 +127,8 @@ class RuleEngine:
     ``meshes`` maps part name -> :class:`geom.Mesh` in the assembly frame.
     ``predicate_runner`` and ``feature_provider`` are supplied by the server
     for rules that need OpenSCAD (predicates) or the CSG dump (alignment).
+    ``feature_provider`` takes the alignment rule's ``tolerance_mm``: axes are
+    grouped at that tolerance, so the rule's own limit decides what is coaxial.
     """
 
     def __init__(
@@ -135,7 +137,7 @@ class RuleEngine:
         meshes: Dict[str, geom.Mesh],
         quality: Quality,
         predicate_runner: Optional[Callable[[List[str]], List[Dict[str, Any]]]] = None,
-        feature_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        feature_provider: Optional[Callable[[float], Dict[str, Any]]] = None,
         printability_provider: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
         volume_cross_check: Optional[Callable[[str, str], Optional[float]]] = None,
     ):
@@ -512,8 +514,10 @@ class RuleEngine:
                     "note": "no feature provider (CSG dump) available",
                 }
             ]
-        result = self.feature_provider()
         tol = float(rule.get("tolerance_mm", 0.2))
+        # Group at the rule's tolerance: grouping at a looser one absorbs an
+        # offset between the two into a shared axis, and it is never reported.
+        result = self.feature_provider(tol)
         rows = []
         for mis in result.get("misaligned", []):
             rows.append(

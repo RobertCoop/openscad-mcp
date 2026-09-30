@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `publish.yml` creates the GitHub release for each published tag, with the
   matching `CHANGELOG.md` section as notes and the sdist and wheel attached.
 
+### Fixed
+- The `alignment` rule in a check file now groups hole axes at its own
+  `tolerance_mm`. It used to group at the `check` tool's `tolerance_mm`
+  (unset in a check file, so 0.2 mm), and an offset between the rule's
+  tolerance and 0.2 mm was merged into a shared axis and reported as PASS.
+
 ### Changed
 - CI skips wall-clock benchmarks (`-m "not performance"`) and its F/E9/B lint
   gate is clean; the performance bounds scale by `PERF_SLACK` locally.

@@ -4357,12 +4357,12 @@ async def check(
             def predicate_runner(exprs: List[str]) -> List[Dict[str, Any]]:
                 return _eval_in_model_scope(src, exprs, all_vars, include_paths, "pred")
 
-            def feature_provider() -> Dict[str, Any]:
+            def feature_provider(tol: float) -> Dict[str, Any]:
                 from . import csgfeatures
 
                 return csgfeatures.align_features(
                     {n: list(fs.features) for n, fs in features_by_part.items()},
-                    tolerance_mm=float(tolerance_mm or 0.2),
+                    tolerance_mm=tol,
                 )
 
             def volume_cross_check(a: str, b: str) -> Optional[float]:
